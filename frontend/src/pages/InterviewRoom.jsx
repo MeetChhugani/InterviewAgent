@@ -1,0 +1,472 @@
+import React, { useEffect, useState } from 'react';
+import { useSearchParams, useNavigate } from 'react-router-dom';
+import axios from 'axios';
+import {
+  LiveKitRoom,
+  RoomAudioRenderer,
+  useVoiceAssistant,
+  BarVisualizer,
+  useLocalParticipant,
+  useRoomContext,
+} from '@livekit/components-react';
+
+import { RoomEvent } from 'livekit-client';
+import interviewerPortrait from '../assets/ai-interviewer.png';
+import interviewerSpeaking from '../assets/ai-speaking.png';
+import interviewerListening from '../assets/ai-listening.png';
+
+function PushToTalkControl({ interviewState, onCompleteInterview, onRepeatQuestion }) {
+  const { localParticipant } = useLocalParticipant();
+  const room = useRoomContext();
+  const state = interviewState || 'SETUP';
+  // One-shot guard: prevents double-click sending stop_answering twice per session.
+  const isStoppingRef = React.useRef(false);
+
+  // ── Single authoritative mic controller ──────────────────────────────────
+  // The mic is enabled ONLY while state === 'RECORDING'.
+  // This is the ONLY place setMicrophoneEnabled is called — no other effect
+  // or handler should call it, which eliminates the race condition where
+  // isMicrophoneEnabled changing triggered an effect that immediately
+  // re-disabled the mic before the state machine caught up.
+  useEffect(() => {
+    if (!localParticipant) return;
+    if (state === 'RECORDING') {
+      localParticipant.setMicrophoneEnabled(true).then(() => {
+        const pub = localParticipant.getTrackPublications().find(p => p.kind === 'audio');
+        console.log('[PTT AUDIO] MIC ENABLED for RECORDING', {
+          publicationExists: !!pub,
+          trackSid: pub?.trackSid,
+          trackEnabled: pub?.track?.mediaStreamTrack?.enabled,
+          isMuted: pub?.isMuted,
+        });
+      }).catch(err => console.error('[PTT AUDIO] FAILED TO ENABLE MIC', err));
+    } else {
+      localParticipant.setMicrophoneEnabled(false);
+    }
+  }, [state, localParticipant]);
+
+  // Reset the STOP guard whenever a new recording session starts.
+  useEffect(() => {
+    if (state === 'RECORDING') {
+      isStoppingRef.current = false;
+    }
+  }, [state]);
+
+  const handleStart = async () => {
+    console.log('[PTT AUDIO] START REQUESTED — sending start_answering (mic will enable when RECORDING state arrives)');
+    const payload = JSON.stringify({ type: 'start_answering' });
+    const encoder = new TextEncoder();
+    if (room && room.localParticipant) {
+      await room.localParticipant.publishData(encoder.encode(payload), { reliable: true });
+    }
+  };
+
+  const handleStop = async () => {
+    console.log('[PTT] STOP HANDLER ENTERED state=%s isStopping=%s', state, isStoppingRef.current);
+    if (state !== 'RECORDING') return;
+    if (isStoppingRef.current) {
+      console.log('[PTT] STOP HANDLER BLOCKED — already stopping');
+      return;
+    }
+    isStoppingRef.current = true;
+    console.log('[PTT AUDIO] STOP — sending stop_answering (mic will disable when state leaves RECORDING)');
+    const payload = JSON.stringify({ type: 'stop_answering' });
+    const encoder = new TextEncoder();
+    if (room && room.localParticipant) {
+      await room.localParticipant.publishData(encoder.encode(payload), { reliable: true });
+    }
+    console.log('[PTT] STOP HANDLER EXITED');
+  };
+
+  // Complete Interview button — shown only in WAITING_FOR_COMPLETION
+  if (state === 'WAITING_FOR_COMPLETION') {
+    return (
+      <div className="flex flex-col items-center">
+        <button
+          onClick={onCompleteInterview}
+          className="px-8 py-4 rounded-full font-semibold text-sm tracking-wide transition-all duration-300 shadow-lg bg-[#22C55E] text-white border border-[#22C55E] cursor-pointer hover:scale-[1.02] active:scale-[0.98]"
+        >
+          ✓ COMPLETE INTERVIEW
+        </button>
+      </div>
+    );
+  }
+
+  // Generating report spinner
+  if (state === 'GENERATING_REPORT') {
+    return (
+      <div className="flex flex-col items-center">
+        <button
+          disabled
+          className="px-8 py-4 rounded-full font-semibold text-sm tracking-wide shadow-lg bg-[#18181B] border border-[#6366F1] text-[#6366F1] opacity-70 cursor-not-allowed animate-pulse"
+        >
+          ⏳ GENERATING REPORT...
+        </button>
+      </div>
+    );
+  }
+
+  let buttonText = "";
+  let disabled = true;
+  let onClick = null;
+  let bgClass = "bg-[#18181B] border border-[#27272A] text-[#A1A1AA]";
+  let pulse = false;
+
+  if (state === 'SETUP' || state === 'INTERVIEW_COMPLETE') {
+    buttonText = state === 'SETUP' ? "INITIALIZING..." : "INTERVIEW COMPLETE";
+    bgClass = "bg-[#18181B] border border-[#6366F1] text-[#6366F1]";
+    disabled = true;
+    pulse = true;
+  } else if (state === 'PROCESSING') {
+    buttonText = "PROCESSING ANSWER...";
+    bgClass = "bg-[#18181B] border border-[#6366F1] text-[#6366F1]";
+    disabled = true;
+    pulse = true;
+  } else if (state === 'AI_SPEAKING') {
+    buttonText = "AI IS SPEAKING";
+    bgClass = "bg-[#18181B] border border-[#27272A] text-[#FAFAFA]";
+    disabled = true;
+  } else if (state === 'RECORDING') {
+    buttonText = "STOP ANSWERING";
+    disabled = false;
+    onClick = handleStop;
+    bgClass = "bg-[#EF4444] text-white border border-[#EF4444]";
+    pulse = true;
+  } else if (state === 'READY_TO_ANSWER') {
+    buttonText = "START ANSWERING";
+    disabled = false;
+    onClick = handleStart;
+    bgClass = "bg-[#FAFAFA] text-[#09090B] border border-[#FAFAFA] hover:bg-white";
+  }
+
+  return (
+    <div className="flex flex-col items-center">
+      <button 
+        onClick={onClick} 
+        disabled={disabled}
+        className={`px-8 py-4 rounded-full font-semibold text-sm tracking-wide transition-all duration-300 shadow-lg ${bgClass} ${disabled ? 'opacity-70 cursor-not-allowed' : 'cursor-pointer hover:scale-[1.02] active:scale-[0.98]'} ${pulse ? 'animate-pulse' : ''}`}
+      >
+        {buttonText}
+      </button>
+      {state === 'READY_TO_ANSWER' && (
+        <button
+          type="button"
+          onClick={onRepeatQuestion}
+          className="repeat-question-button"
+          aria-label="Repeat the current question"
+        >
+          ↻ Repeat question
+        </button>
+      )}
+    </div>
+  );
+}
+
+function AgentVisualizer({ interviewState }) {
+  const { audioTrack } = useVoiceAssistant();
+
+  const stateDetails = {
+    SETUP: {
+      variant: 'ready',
+      title: 'Ready for the technical challenge?',
+      detail: "You've got this. Take a breath. Your interview is about to begin.",
+    },
+    AI_SPEAKING: {
+      variant: 'speaking',
+      title: 'AI interviewer is speaking',
+      detail: 'Listen carefully to the question.',
+    },
+    READY_TO_ANSWER: {
+      variant: 'ready',
+      title: 'Your turn',
+      detail: 'Press Start Answering when you are ready.',
+    },
+    RECORDING: {
+      variant: 'listening',
+      title: 'Listening…',
+      detail: 'Speak naturally, then press Stop Answering.',
+    },
+    PROCESSING: {
+      variant: 'processing',
+      title: 'Analyzing your answer…',
+      detail: 'Your response is being processed.',
+    },
+    WAITING_FOR_COMPLETION: {
+      variant: 'complete',
+      title: 'Screening questions complete',
+      detail: 'Finish the screening to create the assessment report.',
+    },
+    GENERATING_REPORT: {
+      variant: 'processing',
+      title: 'Creating assessment report…',
+      detail: 'Please keep this window open.',
+    },
+  };
+
+  const visualState = stateDetails[interviewState] || {
+    variant: 'ready',
+    title: 'Ready for the technical challenge?',
+    detail: "You've got this. Take a breath. Your interview is about to begin.",
+  };
+
+  const isSpeaking = interviewState === 'AI_SPEAKING';
+
+  return (
+    <section className={`agent-visual-shell agent-visual-shell--${visualState.variant}`} aria-live="polite" aria-atomic="true">
+      <div className="agent-visual-orb" aria-hidden="true">
+        <span className="agent-visual-ring agent-visual-ring--outer" />
+        <span className="agent-visual-ring agent-visual-ring--inner" />
+        <div className="agent-orb-core">
+          {isSpeaking && audioTrack ? (
+            <BarVisualizer state="speaking" trackRef={audioTrack} className="agent-waveform" barCount={5} options={{ minHeight: 4, colors: ['#FAFAFA'] }} />
+          ) : interviewState === 'RECORDING' ? (
+            <span className="agent-mic-symbol">●</span>
+          ) : interviewState === 'PROCESSING' || interviewState === 'GENERATING_REPORT' ? (
+            <span className="agent-loader-dots"><i /><i /><i /></span>
+          ) : interviewState === 'WAITING_FOR_COMPLETION' ? (
+            <span className="agent-complete-symbol">✓</span>
+          ) : (
+            <span className="agent-idle-symbol">✦</span>
+          )}
+        </div>
+      </div>
+      <div className="agent-state-copy">
+        <p className="agent-state-title">{visualState.title}</p>
+        <p className="agent-state-detail">{visualState.detail}</p>
+      </div>
+    </section>
+  );
+}
+
+function InterviewRoomContent({ sessionData, sessionId }) {
+  const room = useRoomContext();
+  const navigate = useNavigate();
+  const [interviewState, setInterviewState] = useState('SETUP');
+  const [currentQ, setCurrentQ] = useState(1);
+  const [totalQ, setTotalQ] = useState(sessionData.setup.num_questions || 5);
+  const interviewerVisual = interviewState === 'AI_SPEAKING'
+    ? { source: interviewerSpeaking, label: 'AI interviewer speaking' }
+    : interviewState === 'RECORDING'
+      ? { source: interviewerListening, label: 'AI interviewer listening' }
+      : { source: interviewerPortrait, label: 'AI interviewer avatar' };
+
+  const handleCompleteInterview = async () => {
+    setInterviewState('GENERATING_REPORT');
+    const payload = JSON.stringify({ type: "complete_interview" });
+    const encoder = new TextEncoder();
+    if (room && room.localParticipant) {
+      await room.localParticipant.publishData(encoder.encode(payload), { reliable: true });
+    }
+    console.log("[PTT] Sent complete_interview");
+  };
+
+  const handleRepeatQuestion = async () => {
+    const payload = JSON.stringify({ type: "repeat_question" });
+    const encoder = new TextEncoder();
+    if (room && room.localParticipant) {
+      await room.localParticipant.publishData(encoder.encode(payload), { reliable: true });
+    }
+    console.log("[PTT] Sent repeat_question");
+  };
+
+  useEffect(() => {
+    if (!room) return;
+    
+    const handleData = (payload, participant, kind, topic) => {
+      try {
+        const data = JSON.parse(new TextDecoder().decode(payload));
+        console.log("[DATA IN]", data);
+
+        if (data.type === 'interview_state' || data.type === 'question_state' || data.type === 'question_started') {
+          if (data.state) {
+            setInterviewState(data.state);
+          }
+          if (data.question_number) {
+            setCurrentQ(data.question_number);
+          }
+          if (data.question_count) {
+            setTotalQ(data.question_count);
+          }
+        }
+
+        if (data.type === 'waiting_for_answer') {
+          console.log("[FLOW] waiting_for_answer received — transitioning to READY_TO_ANSWER");
+          setInterviewState('READY_TO_ANSWER');
+          if (data.question_number) setCurrentQ(data.question_number);
+          if (data.question_count) setTotalQ(data.question_count);
+        }
+
+        if (data.type === 'interview_ready_to_complete') {
+          console.log("[FLOW] interview_ready_to_complete received — showing Complete Interview button");
+          setInterviewState('WAITING_FOR_COMPLETION');
+          if (data.question_number) setCurrentQ(data.question_number);
+          if (data.question_count) setTotalQ(data.question_count);
+        }
+
+        if (data.type === 'interview_completed') {
+          console.log("[FLOW] interview_completed received — navigating to report");
+          navigate(`/report?session_id=${sessionId}`);
+        }
+
+        // Legacy: auto-navigate on INTERVIEW_COMPLETE state (kept for safety)
+        if (data.state === 'INTERVIEW_COMPLETE') {
+          navigate(`/report?session_id=${sessionId}`);
+        }
+      } catch (e) {
+        console.error("Failed to parse data message", e);
+      }
+    };
+    
+    room.on(RoomEvent.DataReceived, handleData);
+    return () => {
+      room.off(RoomEvent.DataReceived, handleData);
+    };
+  }, [room, navigate, sessionId]);
+
+  useEffect(() => {
+    console.log("[PTT STATE]", {
+      interviewState,
+      currentQuestion: currentQ
+    });
+  }, [interviewState, currentQ]);
+
+  return (
+    <>
+      {/* Header */}
+      <header className="w-full flex items-center justify-between px-6 py-4 border-b border-[#27272A] bg-[#09090B]/80 backdrop-blur-md sticky top-0 z-50">
+        <div className="text-[13px] font-semibold tracking-[0.08em] uppercase text-[#FAFAFA]">
+          INTERVIEWOS
+        </div>
+        <div className="flex items-center space-x-6">
+          <div className="hidden lg:flex text-[11px] text-[#A1A1AA] uppercase tracking-widest font-semibold">
+            AI Technical Screening
+          </div>
+          <div className="hidden md:flex text-[12px] text-[#A1A1AA] uppercase tracking-widest font-medium">
+            {sessionData.setup.role}
+          </div>
+          <div className="px-3 py-1 rounded-full bg-[#18181B] border border-[#27272A] text-[11px] font-bold text-[#FAFAFA]">
+            Q {currentQ} / {totalQ}
+          </div>
+        </div>
+      </header>
+
+      {/* Progress Bar */}
+      <div className="w-full h-1 bg-[#18181B]">
+        <div 
+          className="h-full bg-[#6366F1] transition-all duration-500 ease-out"
+          style={{ width: `${(currentQ / totalQ) * 100}%` }}
+        ></div>
+      </div>
+
+      <main className="flex-1 flex flex-col items-center justify-center p-4 md:p-8 w-full max-w-7xl mx-auto">
+        <div className="interview-room-layout w-full h-full min-h-[600px]">
+          
+          {/* Left Column: Visualizer & Controls */}
+          <div className="interview-control-panel w-full flex flex-col items-center justify-center space-y-12 bg-[#111113] border border-[#27272A] rounded-[24px] p-8 shadow-2xl relative overflow-hidden">
+            <div className="absolute top-0 left-0 w-full h-1/2 bg-gradient-to-b from-[#6366F1]/5 to-transparent pointer-events-none"></div>
+            
+            <AgentVisualizer interviewState={interviewState} />
+            
+            <div className="w-full flex justify-center pt-8">
+              <PushToTalkControl
+                interviewState={interviewState}
+                onCompleteInterview={handleCompleteInterview}
+                onRepeatQuestion={handleRepeatQuestion}
+              />
+            </div>
+
+            <button 
+              onClick={() => navigate(`/report?session_id=${sessionId}`)}
+              className="text-[#A1A1AA] hover:text-[#EF4444] text-[11px] font-medium uppercase tracking-wider transition-colors mt-auto"
+            >
+              End screening early
+            </button>
+          </div>
+
+          <aside className="interviewer-presence" aria-label="AI interviewer">
+            <div className="interviewer-presence-glow" aria-hidden="true" />
+            <div className="interviewer-avatar-wrap">
+              <span className="interviewer-avatar-ring interviewer-avatar-ring--one" aria-hidden="true" />
+              <span className="interviewer-avatar-ring interviewer-avatar-ring--two" aria-hidden="true" />
+              <div className="interviewer-avatar">
+                <img
+                  src={interviewerVisual.source}
+                  alt={interviewerVisual.label}
+                />
+              </div>
+              <span className="interviewer-online-dot" aria-hidden="true" />
+            </div>
+            <div className="interviewer-presence-copy">
+              <p className="interviewer-presence-eyebrow">AI interviewer</p>
+              <h2>Technical screening assistant</h2>
+              <p>Guiding the candidate through this role-specific assessment.</p>
+            </div>
+            <div className="interviewer-presence-status">
+              <span className="interviewer-presence-status-dot" aria-hidden="true" />
+              <span>{interviewState === 'AI_SPEAKING' ? 'Speaking now' : interviewState === 'RECORDING' ? 'Listening to candidate' : 'Ready for the next response'}</span>
+            </div>
+          </aside>
+
+        </div>
+      </main>
+      
+    </>
+  );
+}
+
+export default function InterviewRoom() {
+  const [searchParams] = useSearchParams();
+  const sessionId = searchParams.get('session_id');
+  const [token, setToken] = useState(null);
+  const [url, setUrl] = useState(null);
+  const [error, setError] = useState(null);
+  const [sessionData, setSessionData] = useState(null);
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    if (!sessionId) {
+      navigate('/');
+      return;
+    }
+    const fetchData = async () => {
+      try {
+        const [tokenRes, sessionRes] = await Promise.all([
+          axios.get(`http://localhost:8000/api/interview/session/${sessionId}/token`, { timeout: 12000 }),
+          axios.get(`http://localhost:8000/api/interview/session/${sessionId}`, { timeout: 12000 })
+        ]);
+        setToken(tokenRes.data.token);
+        setUrl(tokenRes.data.livekit_url);
+        setSessionData(sessionRes.data);
+      } catch (err) {
+        console.error('Unable to initialize screening session:', err);
+        setError('Unable to initialize the screening session. Confirm that the API and AI interviewer are running, then start a new screening.');
+      }
+    };
+    fetchData();
+  }, [sessionId, navigate]);
+
+  if (error) return <div className="min-h-screen bg-[#09090B] flex items-center justify-center text-[#EF4444] p-4 font-sans">{error}</div>;
+  if (!token || !url || !sessionData) return (
+    <div className="min-h-screen bg-[#09090B] flex items-center justify-center text-[#A1A1AA] font-sans">
+      <div className="flex flex-col items-center space-y-4">
+        <div className="w-6 h-6 border-2 border-[#6366F1] border-t-transparent rounded-full animate-spin"></div>
+        <div className="text-[12px] uppercase tracking-wider">Connecting to secure screening...</div>
+      </div>
+    </div>
+  );
+
+  return (
+    <LiveKitRoom
+      serverUrl={url}
+      token={token}
+      connect={true}
+      audio={true}
+      video={false}
+      className="app-shell room-shell min-h-screen bg-[#09090B] text-[#FAFAFA] font-sans flex flex-col"
+      onDisconnected={() => navigate(`/report?session_id=${sessionId}`)}
+    >
+      <InterviewRoomContent sessionData={sessionData} sessionId={sessionId} />
+      <RoomAudioRenderer />
+    </LiveKitRoom>
+  );
+}
