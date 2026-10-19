@@ -4,6 +4,7 @@ livekit
 livekit-agents
 livekit-plugins-groq
 livekit-plugins-gnani
+livekit-plugins-elevenlabs
 livekit-plugins-silero
 python-dotenv
 pydantic

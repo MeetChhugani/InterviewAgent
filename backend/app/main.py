@@ -13,17 +13,24 @@ logging.basicConfig(level=logging.INFO)
 
 app = FastAPI(title="Voice Interviewer API")
 
+demo_origin = os.getenv("DEMO_FRONTEND_ORIGIN", "").strip()
+demo_tunnel_origins = os.getenv("DEMO_ALLOW_TUNNEL_ORIGINS", "").lower() == "true"
+allowed_origins = [
+    "http://localhost:5173",
+    "http://localhost:5174",
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:5174",
+]
+if demo_origin:
+    allowed_origins.append(demo_origin.rstrip("/"))
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://localhost:5174",
-        "http://127.0.0.1:5173",
-        "http://127.0.0.1:5174",
-    ],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    allow_origin_regex=r"https://[a-z0-9-]+\.trycloudflare\.com" if demo_tunnel_origins else None,
 )
 
 class InterviewSetup(BaseModel):

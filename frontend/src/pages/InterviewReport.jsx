@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useSearchParams, Link } from 'react-router-dom';
-import axios from 'axios';
+import { api } from '../api';
 
 export default function InterviewReport() {
   const [searchParams] = useSearchParams();
@@ -12,7 +12,7 @@ export default function InterviewReport() {
   useEffect(() => {
     const fetchReport = async () => {
       try {
-        const response = await axios.get(`http://localhost:8000/api/interview/session/${sessionId}`);
+        const response = await api.get(`/api/interview/session/${sessionId}`);
         setReport(response.data.report);
       } catch (err) {
         console.error(err);

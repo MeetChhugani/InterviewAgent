@@ -162,6 +162,44 @@ Open the URL printed by Vite (normally `http://localhost:5173` or `http://localh
 7. Select **Repeat question** if the candidate needs to hear the current question again.
 8. When all questions are complete, generate and review the **Candidate Screening Report**.
 
+## Share a temporary team demo (free)
+
+For a review/demo before production hosting, use two Cloudflare Quick Tunnels. The application continues to run on the host laptop, while reviewers receive public browser URLs. Keep all processes open for the duration of the demo.
+
+1. Install [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/) on the host laptop.
+2. Start the FastAPI API with temporary demo-origin support enabled:
+
+```powershell
+$env:DEMO_ALLOW_TUNNEL_ORIGINS="true"
+python -m uvicorn app.main:app --reload
+```
+
+3. Start the LiveKit agent as described above.
+4. In a fourth terminal, expose the API:
+
+```powershell
+cloudflared tunnel --url http://localhost:8000
+```
+
+Copy the generated `https://...trycloudflare.com` API URL. Add it to the frontend launch command below as `VITE_API_URL`.
+
+5. In a fifth terminal, start the frontend with the public API URL:
+
+```powershell
+$env:VITE_API_URL="https://YOUR-API-URL.trycloudflare.com"
+npm run dev -- --host 0.0.0.0
+```
+
+6. Expose Vite from a sixth terminal:
+
+```powershell
+cloudflared tunnel --url http://localhost:5173
+```
+
+Share the generated frontend `https://...trycloudflare.com` URL with the team.
+
+Quick Tunnel links are temporary and change when the tunnel closes. This is suitable for demos only, not persistent production hosting.
+
 ## Validation commands
 
 Run these before sharing changes:

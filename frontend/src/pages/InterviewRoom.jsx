@@ -1,6 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
-import axios from 'axios';
+import { api } from '../api';
 import {
   LiveKitRoom,
   RoomAudioRenderer,
@@ -242,8 +242,47 @@ function InterviewRoomContent({ sessionData, sessionId }) {
   const room = useRoomContext();
   const navigate = useNavigate();
   const [interviewState, setInterviewState] = useState('SETUP');
+  const [browserSpeechActive, setBrowserSpeechActive] = useState(false);
   const [currentQ, setCurrentQ] = useState(1);
   const [totalQ, setTotalQ] = useState(sessionData.setup.num_questions || 5);
+  const speechRequestRef = useRef(0);
+
+  const speakQuestionInBrowser = useCallback((question) => {
+    if (!question?.trim() || !('speechSynthesis' in window)) {
+      setBrowserSpeechActive(false);
+      return;
+    }
+
+    const requestId = ++speechRequestRef.current;
+    window.speechSynthesis.cancel();
+
+    const utterance = new SpeechSynthesisUtterance(question);
+    const voices = window.speechSynthesis.getVoices();
+    const indianMaleVoice = voices.find((voice) =>
+      /en[-_]in/i.test(voice.lang) && /ravi|rishi|prabhat|hemant|male/i.test(voice.name),
+    );
+    const maleVoice = voices.find((voice) => /ravi|rishi|prabhat|hemant|david|mark|male/i.test(voice.name));
+    const indianVoice = voices.find((voice) => /en[-_]in/i.test(voice.lang));
+    const voice = indianMaleVoice || maleVoice || indianVoice;
+
+    if (voice) utterance.voice = voice;
+    utterance.lang = voice?.lang || 'en-IN';
+    utterance.rate = 0.96;
+    utterance.pitch = 1;
+    utterance.onend = utterance.onerror = () => {
+      if (speechRequestRef.current === requestId) setBrowserSpeechActive(false);
+    };
+
+    setBrowserSpeechActive(true);
+    window.speechSynthesis.speak(utterance);
+  }, []);
+
+  useEffect(() => () => {
+    speechRequestRef.current += 1;
+    window.speechSynthesis?.cancel();
+  }, []);
+
+  const displayedInterviewState = browserSpeechActive ? 'AI_SPEAKING' : interviewState;
   const interviewerVisual = interviewState === 'AI_SPEAKING'
     ? { source: interviewerSpeaking, label: 'AI interviewer speaking' }
     : interviewState === 'RECORDING'
@@ -289,6 +328,12 @@ function InterviewRoomContent({ sessionData, sessionId }) {
           }
         }
 
+        if (data.type === 'question_ready') {
+          if (data.question_number) setCurrentQ(data.question_number);
+          if (data.question_count) setTotalQ(data.question_count);
+          speakQuestionInBrowser(data.question);
+        }
+
         if (data.type === 'waiting_for_answer') {
           console.log("[FLOW] waiting_for_answer received — transitioning to READY_TO_ANSWER");
           setInterviewState('READY_TO_ANSWER');
@@ -321,7 +366,38 @@ function InterviewRoomContent({ sessionData, sessionId }) {
     return () => {
       room.off(RoomEvent.DataReceived, handleData);
     };
-  }, [room, navigate, sessionId]);
+  }, [room, navigate, sessionId, speakQuestionInBrowser]);
+
+  // Confirm that the browser has registered its data listener before the
+  // worker sends Question 1. This prevents the initial question from being
+  // lost during the LiveKit room-join race.
+  useEffect(() => {
+    if (!room) return undefined;
+
+    let announced = false;
+    const announceReady = async () => {
+      if (announced || !room.localParticipant || room.state !== 'connected') return;
+      try {
+        const payload = JSON.stringify({ type: 'candidate_ready' });
+        await room.localParticipant.publishData(new TextEncoder().encode(payload), { reliable: true });
+        announced = true;
+        console.log('[ROOM] Candidate browser data listener ready');
+      } catch (error) {
+        console.error('[ROOM] Could not announce browser readiness', error);
+      }
+    };
+
+    announceReady();
+    room.on(RoomEvent.Connected, announceReady);
+    // A room can finish connecting just after this component mounted. Retry a
+    // few times so the initial question cannot be lost to that timing window.
+    const retryTimer = window.setInterval(announceReady, 500);
+
+    return () => {
+      room.off(RoomEvent.Connected, announceReady);
+      window.clearInterval(retryTimer);
+    };
+  }, [room]);
 
   useEffect(() => {
     console.log("[PTT STATE]", {
@@ -365,11 +441,11 @@ function InterviewRoomContent({ sessionData, sessionId }) {
           <div className="interview-control-panel w-full flex flex-col items-center justify-center space-y-12 bg-[#111113] border border-[#27272A] rounded-[24px] p-8 shadow-2xl relative overflow-hidden">
             <div className="absolute top-0 left-0 w-full h-1/2 bg-gradient-to-b from-[#6366F1]/5 to-transparent pointer-events-none"></div>
             
-            <AgentVisualizer interviewState={interviewState} />
+            <AgentVisualizer interviewState={displayedInterviewState} />
             
             <div className="w-full flex justify-center pt-8">
               <PushToTalkControl
-                interviewState={interviewState}
+                interviewState={displayedInterviewState}
                 onCompleteInterview={handleCompleteInterview}
                 onRepeatQuestion={handleRepeatQuestion}
               />
@@ -403,7 +479,7 @@ function InterviewRoomContent({ sessionData, sessionId }) {
             </div>
             <div className="interviewer-presence-status">
               <span className="interviewer-presence-status-dot" aria-hidden="true" />
-              <span>{interviewState === 'AI_SPEAKING' ? 'Speaking now' : interviewState === 'RECORDING' ? 'Listening to candidate' : 'Ready for the next response'}</span>
+              <span>{displayedInterviewState === 'AI_SPEAKING' ? 'Speaking now' : displayedInterviewState === 'RECORDING' ? 'Listening to candidate' : 'Ready for the next response'}</span>
             </div>
           </aside>
 
@@ -431,8 +507,8 @@ export default function InterviewRoom() {
     const fetchData = async () => {
       try {
         const [tokenRes, sessionRes] = await Promise.all([
-          axios.get(`http://localhost:8000/api/interview/session/${sessionId}/token`, { timeout: 12000 }),
-          axios.get(`http://localhost:8000/api/interview/session/${sessionId}`, { timeout: 12000 })
+          api.get(`/api/interview/session/${sessionId}/token`, { timeout: 12000 }),
+          api.get(`/api/interview/session/${sessionId}`, { timeout: 12000 })
         ]);
         setToken(tokenRes.data.token);
         setUrl(tokenRes.data.livekit_url);

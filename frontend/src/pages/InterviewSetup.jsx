@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import axios from 'axios';
+import { api } from '../api';
 
 export default function InterviewSetup() {
   const [domain, setDomain] = useState('Artificial Intelligence / Machine Learning');
@@ -16,7 +16,7 @@ export default function InterviewSetup() {
   const start = async (event) => {
     event.preventDefault(); setLoading(true); setError('');
     try {
-      const response = await axios.post('http://localhost:8000/api/interview/session', { domain, role, difficulty, topics, num_questions: numQuestions });
+      const response = await api.post('/api/interview/session', { domain, role, difficulty, topics, num_questions: numQuestions });
       navigate(`/room?session_id=${response.data.id}`);
     } catch (err) {
       console.error(err); setError('We could not create this screening. Check that the interview service is running and try again.');

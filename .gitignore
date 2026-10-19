@@ -19,6 +19,7 @@ frontend/dist/
 .vscode/
 .idea/
 .agent/
+.demo-logs/
 *.log
 *.pid
 .DS_Store

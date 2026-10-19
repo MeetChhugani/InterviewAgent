@@ -14,6 +14,12 @@ try:
 except ImportError as exc:
     gnani = None
     _gnani_import_error = str(exc)
+try:
+    from livekit.plugins import elevenlabs
+    _elevenlabs_import_error = None
+except ImportError as exc:
+    elevenlabs = None
+    _elevenlabs_import_error = str(exc)
 from livekit.agents import inference
 
 from dotenv import load_dotenv
@@ -21,6 +27,10 @@ import logging
 
 load_dotenv()
 logger = logging.getLogger("interviewer")
+
+# A provider-side TTS stream can occasionally remain open without returning an
+# error. Do not let that leave a candidate session permanently in AI_SPEAKING.
+TTS_SPEECH_TIMEOUT_SECONDS = float(os.getenv("TTS_SPEECH_TIMEOUT_SECONDS", "40"))
 
 
 def parse_json_object(content: str) -> dict:
@@ -167,6 +177,11 @@ async def entrypoint(ctx: JobContext):
 
     # report_generation_started — prevents do_complete_interview running twice
     report_generation_started = False
+
+    # The browser explicitly acknowledges that its LiveKit data listener is
+    # installed before Question 1 is published.  This avoids losing the first
+    # question when the candidate joins while the worker is starting.
+    candidate_ready_for_question = False
 
     # ── Interview config ──────────────────────────────────────────────────────
     role        = setup.get("role",       "Unknown Role")
@@ -365,33 +380,24 @@ async def entrypoint(ctx: JobContext):
 
             current_question_text = question_text
 
-            # ── Speak the question via TTS ─────────────────────────────────────
-            async def speak_interview_question(question_text: str):
-                nonlocal interview_phase
-                if interview_phase != "AI_SPEAKING": # Phase was set to AI_SPEAKING just before
-                    logger.warning("[FLOW] SPOKEN RESPONSE BLOCKED: phase=%s", interview_phase)
-                    return False
-                
-                logger.info("[FLOW] BEFORE SESSION.SAY question_number=%s phase=%s", current_q, interview_phase)
-                logger.info("[FLOW] SESSION.SAY START")
-                
-                await session.say(text=question_text)
-    
-                logger.info("[FLOW] SESSION.SAY RETURNED question_number=%s", current_q)
-    
-                # session.say() resolves when TTS finishes playing
-                interview_phase = "WAITING_FOR_ANSWER"
-                logger.info("[FLOW] SETTING WAITING_FOR_ANSWER question_number=%s phase=%s", current_q, interview_phase)
-                
-                await publish({
-                    "type": "waiting_for_answer",
-                    "question_number": current_q,
-                    "question_count": question_count,
-                })
-                return True
-
-            interview_phase = "AI_SPEAKING"
-            await speak_interview_question(question_text)
+            # ── Deliver scripted question for browser speech synthesis ─────────
+            # Provider-side TTS can be unavailable during a temporary public
+            # demo. The client uses the browser's system voice to speak this
+            # exact text and keeps the existing LiveKit data-channel flow.
+            logger.info("[QUESTION DELIVERY] Sending question to browser TTS")
+            interview_phase = "WAITING_FOR_ANSWER"
+            await publish({
+                "type": "question_ready",
+                "question": question_text,
+                "question_number": current_q,
+                "question_count": question_count,
+            })
+            logger.info("[FLOW] SETTING WAITING_FOR_ANSWER question_number=%s phase=%s", current_q, interview_phase)
+            await publish({
+                "type": "waiting_for_answer",
+                "question_number": current_q,
+                "question_count": question_count,
+            })
             
             return question_text
 
@@ -423,30 +429,73 @@ async def entrypoint(ctx: JobContext):
 
     interviewer_agent = Agent(instructions=system_prompt)
 
-    use_gnani = bool(os.getenv("GNANI_API_KEY")) and gnani is not None
-    if use_gnani:
+    use_gnani_stt = bool(os.getenv("GNANI_API_KEY")) and gnani is not None
+    elevenlabs_api_key = os.getenv("ELEVEN_API_KEY") or os.getenv("ELEVENLABS_API_KEY")
+    tts_provider = os.getenv("INTERVIEW_TTS_PROVIDER", "inference").strip().lower()
+
+    # Gnani STT is retained for Indian languages and Hinglish. LiveKit
+    # Inference is the reliable default spoken-voice path for the public demo.
+    # Gnani and ElevenLabs remain explicit opt-in providers.
+    if use_gnani_stt:
+        session_stt = gnani.STT(language="en-IN", preferred_language="hi-IN")
+    else:
+        if os.getenv("GNANI_API_KEY") and gnani is None:
+            logger.error(
+                "[VOICE] GNANI_API_KEY is configured, but the Gnani plugin could not load: %s.",
+                _gnani_import_error or "unknown import error",
+            )
+        logger.warning("[VOICE] Gnani STT is not configured; using Groq STT")
+        session_stt = groq.STT()
+
+    if tts_provider == "elevenlabs" and elevenlabs_api_key and elevenlabs is not None:
+        eleven_voice_id = os.getenv("ELEVENLABS_VOICE_ID", "hpp4J3VqNfWAUOO0d1Us")
+        eleven_model = os.getenv("ELEVENLABS_TTS_MODEL", "eleven_turbo_v2_5")
+        logger.info(
+            "[VOICE] Using ElevenLabs TTS (voice_id=%s, model=%s); Gnani STT=%s",
+            eleven_voice_id,
+            eleven_model,
+            "enabled" if use_gnani_stt else "disabled",
+        )
+        session_tts = elevenlabs.TTS(
+            api_key=elevenlabs_api_key,
+            voice_id=eleven_voice_id,
+            model=eleven_model,
+        )
+    elif tts_provider == "gnani" and use_gnani_stt:
         gnani_voice = os.getenv("GNANI_TTS_VOICE", "Vikrant")
         logger.info(
             "[VOICE] Using Gnani Indian-language STT/TTS (model=timbre-v2.5, voice=%s, language=auto)",
             gnani_voice,
         )
-        session_stt = gnani.STT(language="en-IN", preferred_language="hi-IN")
         session_tts = gnani.TTS(
             model="timbre-v2.5",
             voice=gnani_voice,
             language="auto",
             sample_rate=16000,
+            # The provider's REST endpoint is used below through LiveKit's
+            # StreamAdapter. Gnani's realtime WebSocket stream can remain open
+            # without emitting audio on some Windows/network combinations.
+            synthesize_method="rest",
         )
+        # AgentSession otherwise selects TTS.stream(), which always uses the
+        # Gnani WebSocket endpoint. Mark the provider as non-streaming so
+        # LiveKit sentence-adapts it through the reliable REST synthesizer.
+        session_tts.capabilities.streaming = False
+        logger.info("[VOICE] Gnani TTS transport=REST (streaming WebSocket disabled)")
     else:
-        if os.getenv("GNANI_API_KEY") and gnani is None:
+        if tts_provider == "elevenlabs" and elevenlabs is None:
             logger.error(
-                "[VOICE] GNANI_API_KEY is configured, but the Gnani plugin could not load: %s. "
-                "Hindi speech will fall back to the English-only voice.",
-                _gnani_import_error or "unknown import error",
+                "[VOICE] ElevenLabs was selected but its plugin is unavailable: %s. "
+                "Falling back to LiveKit Inference TTS.",
+                _elevenlabs_import_error or "unknown import error",
             )
-        logger.warning("[VOICE] Gnani is not configured; using the existing default STT/TTS")
-        session_stt = groq.STT()
-        session_tts = inference.TTS(model="deepgram/aura-2", voice="athena", language="en")
+        elif tts_provider == "elevenlabs" and not elevenlabs_api_key:
+            logger.error("[VOICE] ElevenLabs was selected but ELEVENLABS_API_KEY is missing. Falling back to LiveKit Inference TTS.")
+        elif tts_provider == "gnani" and not use_gnani_stt:
+            logger.error("[VOICE] Gnani TTS was selected but Gnani is unavailable. Falling back to LiveKit Inference TTS.")
+        inference_voice = os.getenv("LIVEKIT_TTS_VOICE", "odysseus")
+        logger.info("[VOICE] Using LiveKit Inference TTS (Deepgram Aura-2, male voice=%s)", inference_voice)
+        session_tts = inference.TTS(model="deepgram/aura-2", voice=inference_voice, language="en")
 
     session = AgentSession(
         stt=session_stt,
@@ -500,29 +549,31 @@ async def entrypoint(ctx: JobContext):
             return
 
         logger.info("[REPEAT] Replaying question_number=%s", current_q)
-        interview_phase = "AI_SPEAKING"
-        await broadcast_state("AI_SPEAKING")
-        try:
-            await session.say(text=current_question_text)
-        except Exception:
-            logger.exception("[REPEAT] Unable to replay question")
-        finally:
-            interview_phase = "WAITING_FOR_ANSWER"
-            await publish({
-                "type": "waiting_for_answer",
-                "question_number": current_q,
-                "question_count": question_count,
-            })
+        await publish({
+            "type": "question_ready",
+            "question": current_question_text,
+            "question_number": current_q,
+            "question_count": question_count,
+            "is_repeat": True,
+        })
 
     @ctx.room.on("data_received")
     def on_data_received(data_packet):
-        nonlocal is_processing_turn, interview_phase, awaiting_late_transcript
+        nonlocal is_processing_turn, interview_phase, awaiting_late_transcript, candidate_ready_for_question
         try:
             payload_text = data_packet.data.decode("utf-8")
             logger.info("DATA RECEIVED: %s", payload_text)
             payload = json.loads(payload_text)
 
-            if payload.get("type") == "start_answering":
+            if payload.get("type") == "candidate_ready":
+                if candidate_ready_for_question:
+                    logger.info("[ROOM] Duplicate candidate_ready ignored")
+                    return
+                candidate_ready_for_question = True
+                logger.info("[ROOM] BROWSER DATA LISTENER READY — starting Question 1")
+                asyncio.create_task(generate_interview_question("initial"))
+
+            elif payload.get("type") == "start_answering":
                 logger.info("START ANSWERING RECEIVED phase=%s", interview_phase)
                 candidate_transcript_buffer.clear()
                 final_transcript_event.clear()
@@ -566,8 +617,10 @@ async def entrypoint(ctx: JobContext):
     logger.info("[ROOM] AGENT SESSION STARTED")
     logger.info("[ROOM] ROOMIO ACTIVE")
 
-    # THE ONLY TOP-LEVEL CALL TO generate_interview_question
-    await generate_interview_question("initial")
+    # Wait for the browser's explicit data-channel acknowledgement. LiveKit
+    # data packets are not replayed to late joiners, so generating Question 1
+    # here can race ahead of the browser's listener.
+    logger.info("[ROOM] WAITING FOR BROWSER DATA LISTENER BEFORE INITIAL QUESTION")
 
     # ── Answer Evaluation ──
     async def evaluate_answer(question: str, answer: str) -> dict:

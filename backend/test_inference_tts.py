@@ -14,7 +14,7 @@ async def main():
     async with utils.http_context.open():
         tts = inference.TTS(
             model="deepgram/aura-2",
-            voice="athena",
+            voice=os.getenv("LIVEKIT_TTS_VOICE", "odysseus"),
             language="en"
         )
 
