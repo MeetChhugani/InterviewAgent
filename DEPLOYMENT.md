@@ -64,6 +64,14 @@ Create a **second Railway service** from the same GitHub repository.
 
 4. Add the same LiveKit, Groq, Gnani, and interview-language variables used
    by the API service.
+   Also add the API service's public Railway URL:
+
+   ```text
+   INTERVIEW_API_URL=https://YOUR-RAILWAY-API-DOMAIN
+   ```
+
+   The worker uses this URL to save the final report. `localhost` only works
+   when both the API and worker run on the same machine.
 5. Do not create a public domain for this worker. It connects outward to
    LiveKit and must remain running.
 

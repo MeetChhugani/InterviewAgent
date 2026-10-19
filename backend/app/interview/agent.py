@@ -80,8 +80,9 @@ def missing_answer_evaluation() -> dict:
 
 async def fetch_session(session_id: str):
     logger.info("FETCHING SESSION: %s", session_id)
+    api_base_url = os.getenv("INTERVIEW_API_URL", "http://localhost:8000").rstrip("/")
     async with httpx.AsyncClient() as client:
-        r = await client.get(f"http://localhost:8000/api/interview/session/{session_id}")
+        r = await client.get(f"{api_base_url}/api/interview/session/{session_id}")
     logger.info("SESSION RESPONSE STATUS: %s", r.status_code)
     data = r.json()
     if r.status_code != 200:
@@ -96,11 +97,16 @@ async def fetch_session(session_id: str):
 
 
 async def complete_session(session_id: str, report: dict):
-    async with httpx.AsyncClient() as client:
-        await client.post(
-            f"http://localhost:8000/api/interview/session/{session_id}/complete",
+    # Locally the API and worker share localhost. In Railway they are separate
+    # services, so INTERVIEW_API_URL must point to the deployed FastAPI API.
+    api_base_url = os.getenv("INTERVIEW_API_URL", "http://localhost:8000").rstrip("/")
+    logger.info("[REPORT] Saving report to API at %s", api_base_url)
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        response = await client.post(
+            f"{api_base_url}/api/interview/session/{session_id}/complete",
             json=report,
         )
+    response.raise_for_status()
 
 
 server = AgentServer()
