@@ -24,6 +24,9 @@ allowed_origins = [
 if demo_origin:
     allowed_origins.append(demo_origin.rstrip("/"))
 
+# Safe deployment diagnostic: URLs are public, while API keys are never logged.
+logging.getLogger("api").info("CORS allowed origins configured: %s", allowed_origins)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
