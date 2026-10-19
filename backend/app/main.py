@@ -13,7 +13,10 @@ logging.basicConfig(level=logging.INFO)
 
 app = FastAPI(title="Voice Interviewer API")
 
-demo_origin = os.getenv("DEMO_FRONTEND_ORIGIN", "").strip()
+demo_origin = os.getenv(
+    "DEMO_FRONTEND_ORIGIN",
+    "https://interview-agent-ten-umber.vercel.app",
+).strip()
 demo_tunnel_origins = os.getenv("DEMO_ALLOW_TUNNEL_ORIGINS", "").lower() == "true"
 allowed_origins = [
     "http://localhost:5173",
