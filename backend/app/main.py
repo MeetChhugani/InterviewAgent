@@ -13,18 +13,17 @@ logging.basicConfig(level=logging.INFO)
 
 app = FastAPI(title="Voice Interviewer API")
 
-demo_origin = os.getenv(
-    "DEMO_FRONTEND_ORIGIN",
-    "https://interview-agent-ten-umber.vercel.app",
-).strip()
+production_frontend_origin = "https://interview-agent-ten-umber.vercel.app"
+demo_origin = os.getenv("DEMO_FRONTEND_ORIGIN", "").strip()
 demo_tunnel_origins = os.getenv("DEMO_ALLOW_TUNNEL_ORIGINS", "").lower() == "true"
 allowed_origins = [
     "http://localhost:5173",
     "http://localhost:5174",
     "http://127.0.0.1:5173",
     "http://127.0.0.1:5174",
+    production_frontend_origin,
 ]
-if demo_origin:
+if demo_origin and demo_origin.rstrip("/") not in allowed_origins:
     allowed_origins.append(demo_origin.rstrip("/"))
 
 # Safe deployment diagnostic: URLs are public, while API keys are never logged.
