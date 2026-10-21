@@ -245,28 +245,50 @@ function InterviewRoomContent({ sessionData, sessionId }) {
   const [browserSpeechActive, setBrowserSpeechActive] = useState(false);
   const [currentQ, setCurrentQ] = useState(1);
   const [totalQ, setTotalQ] = useState(sessionData.setup.num_questions || 5);
+  const [currentQuestion, setCurrentQuestion] = useState('');
+  const [currentQuestionLanguage, setCurrentQuestionLanguage] = useState('english');
   const speechRequestRef = useRef(0);
+  const speechTimerRef = useRef(null);
 
-  const speakQuestionInBrowser = useCallback((question) => {
+  const speakQuestionInBrowser = useCallback(async (question, questionLanguage = 'english') => {
     if (!question?.trim() || !('speechSynthesis' in window)) {
       setBrowserSpeechActive(false);
       return;
     }
 
     const requestId = ++speechRequestRef.current;
+    if (speechTimerRef.current) window.clearTimeout(speechTimerRef.current);
     window.speechSynthesis.cancel();
 
+    // Chrome can expose an empty voice list on the first utterance. Waiting
+    // briefly for voiceschanged avoids the crackle/truncated first question.
+    const voices = await new Promise((resolve) => {
+      const available = window.speechSynthesis.getVoices();
+      if (available.length) {
+        resolve(available);
+        return;
+      }
+      const finish = () => {
+        window.speechSynthesis.removeEventListener('voiceschanged', finish);
+        resolve(window.speechSynthesis.getVoices());
+      };
+      window.speechSynthesis.addEventListener('voiceschanged', finish, { once: true });
+      window.setTimeout(finish, 700);
+    });
+    if (speechRequestRef.current !== requestId) return;
+
     const utterance = new SpeechSynthesisUtterance(question);
-    const voices = window.speechSynthesis.getVoices();
+    const isHindi = questionLanguage === 'hindi' || /[\u0900-\u097F]/.test(question);
+    const hindiVoice = voices.find((voice) => /^hi[-_]/i.test(voice.lang));
     const indianMaleVoice = voices.find((voice) =>
       /en[-_]in/i.test(voice.lang) && /ravi|rishi|prabhat|hemant|male/i.test(voice.name),
     );
     const maleVoice = voices.find((voice) => /ravi|rishi|prabhat|hemant|david|mark|male/i.test(voice.name));
     const indianVoice = voices.find((voice) => /en[-_]in/i.test(voice.lang));
-    const voice = indianMaleVoice || maleVoice || indianVoice;
+    const voice = isHindi ? (hindiVoice || indianVoice) : (indianMaleVoice || maleVoice || indianVoice);
 
     if (voice) utterance.voice = voice;
-    utterance.lang = voice?.lang || 'en-IN';
+    utterance.lang = voice?.lang || (isHindi ? 'hi-IN' : 'en-IN');
     utterance.rate = 0.96;
     utterance.pitch = 1;
     utterance.onend = utterance.onerror = () => {
@@ -274,11 +296,19 @@ function InterviewRoomContent({ sessionData, sessionId }) {
     };
 
     setBrowserSpeechActive(true);
-    window.speechSynthesis.speak(utterance);
+    // Let Chrome settle after the initial room/navigation work before its
+    // first synthesis request. This prevents the first-word crackle seen on
+    // some desktop and Android browsers.
+    speechTimerRef.current = window.setTimeout(() => {
+      if (speechRequestRef.current !== requestId) return;
+      window.speechSynthesis.speak(utterance);
+      window.speechSynthesis.resume();
+    }, 120);
   }, []);
 
   useEffect(() => () => {
     speechRequestRef.current += 1;
+    if (speechTimerRef.current) window.clearTimeout(speechTimerRef.current);
     window.speechSynthesis?.cancel();
   }, []);
 
@@ -331,7 +361,9 @@ function InterviewRoomContent({ sessionData, sessionId }) {
         if (data.type === 'question_ready') {
           if (data.question_number) setCurrentQ(data.question_number);
           if (data.question_count) setTotalQ(data.question_count);
-          speakQuestionInBrowser(data.question);
+          setCurrentQuestion(data.question || '');
+          setCurrentQuestionLanguage(data.language || 'english');
+          speakQuestionInBrowser(data.question, data.language);
         }
 
         if (data.type === 'waiting_for_answer') {
@@ -440,6 +472,16 @@ function InterviewRoomContent({ sessionData, sessionId }) {
           {/* Left Column: Visualizer & Controls */}
           <div className="interview-control-panel w-full flex flex-col items-center justify-center space-y-12 bg-[#111113] border border-[#27272A] rounded-[24px] p-8 shadow-2xl relative overflow-hidden">
             <div className="absolute top-0 left-0 w-full h-1/2 bg-gradient-to-b from-[#6366F1]/5 to-transparent pointer-events-none"></div>
+
+            {currentQuestion && (
+              <section className="relative z-10 w-full rounded-2xl border border-indigo-400/30 bg-gradient-to-r from-indigo-500/10 via-violet-500/10 to-cyan-500/10 px-5 py-4" aria-live="polite">
+                <div className="mb-2 flex items-center justify-between gap-3 text-[10px] font-bold uppercase tracking-[0.16em] text-indigo-200">
+                  <span>Question {String(currentQ).padStart(2, '0')}</span>
+                  <span>{currentQuestionLanguage === 'hindi' ? 'हिंदी' : currentQuestionLanguage === 'hinglish' ? 'Hinglish' : 'English'}</span>
+                </div>
+                <p className="text-base font-medium leading-relaxed text-white">{currentQuestion}</p>
+              </section>
+            )}
             
             <AgentVisualizer interviewState={displayedInterviewState} />
             

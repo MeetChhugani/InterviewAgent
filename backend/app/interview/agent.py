@@ -172,6 +172,7 @@ async def entrypoint(ctx: JobContext):
     question_count          = MAX_INTERVIEW_QUESTIONS
     current_q               = 0
     current_question_text   = ""
+    current_question_language = "english"
     interview_results       = []
 
     # interview_phase — only generate_interview_question and handle_user_speech write this
@@ -270,7 +271,7 @@ async def entrypoint(ctx: JobContext):
     #   2. handle_user_speech (after evaluation) → generate_interview_question("after_answer")
     #
     async def generate_interview_question(source: str):
-        nonlocal current_q, current_question_text, interview_phase
+        nonlocal current_q, current_question_text, current_question_language, interview_phase
 
         # ── Hard guards: refuse if state machine is wrong ─────────────────────
         if interview_phase not in ("INIT", "GENERATING_QUESTION"):
@@ -311,6 +312,7 @@ async def entrypoint(ctx: JobContext):
             await send_question_started()
 
             question_language = question_languages[current_q - 1]
+            current_question_language = question_language
             language_instruction = {
                 "english": "Ask in clear professional English only.",
                 "hindi": "Ask in pure Hindi written in Devanagari script only. Keep unavoidable technical terms in English.",
@@ -381,6 +383,8 @@ async def entrypoint(ctx: JobContext):
                     question_text = (
                         f"क्या आप {fallback_topic} से संबंधित किसी मूल अवधारणा को समझा सकते हैं?"
                         if question_language == "hindi"
+                        else f"Kya aap {fallback_topic} se related kisi core concept ko explain kar sakte hain?"
+                        if question_language == "hinglish"
                         else f"Can you explain a core concept related to {fallback_topic}?"
                     )
 
@@ -395,6 +399,7 @@ async def entrypoint(ctx: JobContext):
             await publish({
                 "type": "question_ready",
                 "question": question_text,
+                "language": question_language,
                 "question_number": current_q,
                 "question_count": question_count,
             })
@@ -558,6 +563,7 @@ async def entrypoint(ctx: JobContext):
         await publish({
             "type": "question_ready",
             "question": current_question_text,
+            "language": current_question_language,
             "question_number": current_q,
             "question_count": question_count,
             "is_repeat": True,
@@ -798,7 +804,13 @@ Provide a JSON response matching this schema exactly:
 - final_feedback (string summarizing performance)
 - recommendation (string, e.g. "STRONG HIRE", "HIRE", "NO HIRE")
 """
-            report_data = await request_json(prompt, "FINAL_REPORT")
+            # Per-question evaluation already exists. Keep the optional
+            # narrative synthesis bounded so a slow model cannot leave the
+            # candidate on the report-generation state indefinitely.
+            report_data = await asyncio.wait_for(
+                request_json(prompt, "FINAL_REPORT"),
+                timeout=15.0,
+            )
             
             report = {
                 "overall_score":       report_data.get("overall_score", overall),
