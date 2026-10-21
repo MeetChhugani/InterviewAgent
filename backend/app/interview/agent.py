@@ -758,6 +758,7 @@ Provide a JSON response with the following fields:
         interview_phase = "GENERATING_REPORT"
 
         logger.info("[COMPLETE_INTERVIEW] Received")
+        await publish({"type": "report_started"})
 
         if len(interview_results) < MAX_INTERVIEW_QUESTIONS:
             logger.error(
@@ -863,8 +864,17 @@ Provide a JSON response matching this schema exactly:
                 "recommendation": "NO HIRE",
             })
 
-        await complete_session(session_id, report)
-        logger.info("[REPORT] Stored via complete_session")
+        try:
+            await complete_session(session_id, report)
+            logger.info("[REPORT] Stored via complete_session")
+        except Exception as error:
+            # Do not leave the browser on an infinite report spinner if a
+            # worker-to-API network/configuration error occurs.
+            logger.exception("[REPORT] Failed to store report")
+            report_generation_started = False
+            interview_phase = "WAITING_FOR_COMPLETION"
+            await publish({"type": "report_failed", "message": str(error)})
+            return
 
         interview_phase = "COMPLETE"
         await publish({"type": "interview_completed"})

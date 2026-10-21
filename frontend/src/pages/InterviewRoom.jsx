@@ -245,8 +245,6 @@ function InterviewRoomContent({ sessionData, sessionId }) {
   const [browserSpeechActive, setBrowserSpeechActive] = useState(false);
   const [currentQ, setCurrentQ] = useState(1);
   const [totalQ, setTotalQ] = useState(sessionData.setup.num_questions || 5);
-  const [currentQuestion, setCurrentQuestion] = useState('');
-  const [currentQuestionLanguage, setCurrentQuestionLanguage] = useState('english');
   const speechRequestRef = useRef(0);
   const speechTimerRef = useRef(null);
 
@@ -361,8 +359,6 @@ function InterviewRoomContent({ sessionData, sessionId }) {
         if (data.type === 'question_ready') {
           if (data.question_number) setCurrentQ(data.question_number);
           if (data.question_count) setTotalQ(data.question_count);
-          setCurrentQuestion(data.question || '');
-          setCurrentQuestionLanguage(data.language || 'english');
           speakQuestionInBrowser(data.question, data.language);
         }
 
@@ -385,6 +381,11 @@ function InterviewRoomContent({ sessionData, sessionId }) {
           navigate(`/report?session_id=${sessionId}`);
         }
 
+        if (data.type === 'report_failed') {
+          console.error('[REPORT] Worker could not store the report', data.message);
+          setInterviewState('WAITING_FOR_COMPLETION');
+        }
+
         // Legacy: auto-navigate on INTERVIEW_COMPLETE state (kept for safety)
         if (data.state === 'INTERVIEW_COMPLETE') {
           navigate(`/report?session_id=${sessionId}`);
@@ -399,6 +400,42 @@ function InterviewRoomContent({ sessionData, sessionId }) {
       room.off(RoomEvent.DataReceived, handleData);
     };
   }, [room, navigate, sessionId, speakQuestionInBrowser]);
+
+  // The final LiveKit data packet can be missed if the room disconnects while
+  // the report is being saved. Poll the API during report generation so the
+  // candidate is redirected as soon as the persisted report is available.
+  useEffect(() => {
+    if (interviewState !== 'GENERATING_REPORT') return undefined;
+
+    let cancelled = false;
+    let attempts = 0;
+    const checkForReport = async () => {
+      attempts += 1;
+      try {
+        const response = await api.get(`/api/interview/session/${sessionId}`);
+        if (!cancelled && response.data?.report) {
+          navigate(`/report?session_id=${sessionId}`, { replace: true });
+          return;
+        }
+      } catch (error) {
+        console.warn('[REPORT] Waiting for saved report', error);
+      }
+
+      // The worker limits narrative generation to 15 seconds. If it still
+      // has not saved a report after a minute, restore the completion control
+      // instead of leaving the candidate on an infinite loader.
+      if (!cancelled && attempts >= 40) {
+        setInterviewState('WAITING_FOR_COMPLETION');
+      }
+    };
+
+    checkForReport();
+    const pollTimer = window.setInterval(checkForReport, 1500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(pollTimer);
+    };
+  }, [interviewState, navigate, sessionId]);
 
   // Confirm that the browser has registered its data listener before the
   // worker sends Question 1. This prevents the initial question from being
@@ -473,16 +510,6 @@ function InterviewRoomContent({ sessionData, sessionId }) {
           <div className="interview-control-panel w-full flex flex-col items-center justify-center space-y-12 bg-[#111113] border border-[#27272A] rounded-[24px] p-8 shadow-2xl relative overflow-hidden">
             <div className="absolute top-0 left-0 w-full h-1/2 bg-gradient-to-b from-[#6366F1]/5 to-transparent pointer-events-none"></div>
 
-            {currentQuestion && (
-              <section className="relative z-10 w-full rounded-2xl border border-indigo-400/30 bg-gradient-to-r from-indigo-500/10 via-violet-500/10 to-cyan-500/10 px-5 py-4" aria-live="polite">
-                <div className="mb-2 flex items-center justify-between gap-3 text-[10px] font-bold uppercase tracking-[0.16em] text-indigo-200">
-                  <span>Question {String(currentQ).padStart(2, '0')}</span>
-                  <span>{currentQuestionLanguage === 'hindi' ? 'हिंदी' : currentQuestionLanguage === 'hinglish' ? 'Hinglish' : 'English'}</span>
-                </div>
-                <p className="text-base font-medium leading-relaxed text-white">{currentQuestion}</p>
-              </section>
-            )}
-            
             <AgentVisualizer interviewState={displayedInterviewState} />
             
             <div className="w-full flex justify-center pt-8">
