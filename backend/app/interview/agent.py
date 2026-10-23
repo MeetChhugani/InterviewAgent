@@ -3,7 +3,6 @@ import os
 import json
 import httpx
 import re
-import random
 
 from livekit import agents
 from livekit.agents import Agent, AgentServer, AgentSession, JobContext, llm, AgentStateChangedEvent
@@ -31,6 +30,7 @@ logger = logging.getLogger("interviewer")
 # A provider-side TTS stream can occasionally remain open without returning an
 # error. Do not let that leave a candidate session permanently in AI_SPEAKING.
 TTS_SPEECH_TIMEOUT_SECONDS = float(os.getenv("TTS_SPEECH_TIMEOUT_SECONDS", "40"))
+REPORT_SAVE_ATTEMPTS = max(1, int(os.getenv("REPORT_SAVE_ATTEMPTS", "4")))
 
 
 def parse_json_object(content: str) -> dict:
@@ -100,13 +100,46 @@ async def complete_session(session_id: str, report: dict):
     # Locally the API and worker share localhost. In Railway they are separate
     # services, so INTERVIEW_API_URL must point to the deployed FastAPI API.
     api_base_url = os.getenv("INTERVIEW_API_URL", "http://localhost:8000").rstrip("/")
-    logger.info("[REPORT] Saving report to API at %s", api_base_url)
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        response = await client.post(
-            f"{api_base_url}/api/interview/session/{session_id}/complete",
-            json=report,
+    if api_base_url in {"http://localhost:8000", "http://127.0.0.1:8000"}:
+        raise RuntimeError(
+            "INTERVIEW_API_URL is not configured for the deployed worker. "
+            "Set it to the public URL of the FastAPI API service."
         )
-    response.raise_for_status()
+
+    endpoint = f"{api_base_url}/api/interview/session/{session_id}/complete"
+    logger.info("[REPORT] Saving report to API at %s", api_base_url)
+    last_error = None
+    # A newly-woken public API can briefly reject the worker connection. Retry
+    # transient transport and server errors before declaring the report failed.
+    async with httpx.AsyncClient(timeout=httpx.Timeout(20.0, connect=10.0)) as client:
+        for attempt in range(1, REPORT_SAVE_ATTEMPTS + 1):
+            try:
+                response = await client.post(endpoint, json=report)
+                response.raise_for_status()
+                logger.info("[REPORT] Saved on attempt %d/%d", attempt, REPORT_SAVE_ATTEMPTS)
+                return
+            except (httpx.RequestError, httpx.HTTPStatusError) as error:
+                last_error = error
+                retryable_status = (
+                    not isinstance(error, httpx.HTTPStatusError)
+                    or error.response.status_code >= 500
+                )
+                if not retryable_status or attempt == REPORT_SAVE_ATTEMPTS:
+                    break
+                delay_seconds = attempt * 2
+                logger.warning(
+                    "[REPORT] Save attempt %d/%d failed (%s); retrying in %ss",
+                    attempt,
+                    REPORT_SAVE_ATTEMPTS,
+                    error,
+                    delay_seconds,
+                )
+                await asyncio.sleep(delay_seconds)
+
+    raise RuntimeError(
+        f"Could not save the report to {api_base_url} after "
+        f"{REPORT_SAVE_ATTEMPTS} attempt(s): {last_error}"
+    ) from last_error
 
 
 server = AgentServer()
@@ -196,24 +229,14 @@ async def entrypoint(ctx: JobContext):
     difficulty  = setup.get("difficulty", "Unknown Difficulty")
     topics_list = setup.get("topics", [])
     topics_str  = ", ".join(topics_list)
-    groq_model  = os.getenv("GROQ_LLM_MODEL", "openai/gpt-oss-20b")
-    language_mode = os.getenv("INTERVIEW_LANGUAGE_MODE", "bilingual").strip().lower()
-    # This selects each question's language as it is generated after an answer.
-    # It does not generate all questions at once or consume extra tokens upfront.
-    english_questions = (MAX_INTERVIEW_QUESTIONS + 1) // 2
-    hindi_questions = MAX_INTERVIEW_QUESTIONS - english_questions
-    question_languages = ["english"] * english_questions + ["hindi"] * hindi_questions
-    if language_mode == "bilingual":
-        random.shuffle(question_languages)
-    elif language_mode == "hindi":
-        question_languages = ["hindi"] * MAX_INTERVIEW_QUESTIONS
-    elif language_mode == "hinglish":
-        question_languages = ["hinglish"] * MAX_INTERVIEW_QUESTIONS
-    else:
-        question_languages = ["english"] * MAX_INTERVIEW_QUESTIONS
+    groq_model  = os.getenv("GROQ_LLM_MODEL", "llama-3.1-8b-instant")
+    # Interviews are intentionally English-only. Keeping this in code (rather
+    # than relying only on an environment variable) prevents an old Railway
+    # variable from unexpectedly returning Hindi or Hinglish questions.
+    question_languages = ["english"] * MAX_INTERVIEW_QUESTIONS
 
     logger.info(
-        "[INTERVIEW CONFIG] role=%s domain=%s difficulty=%s topics=%s",
+        "[INTERVIEW CONFIG] role=%s domain=%s difficulty=%s topics=%s language=english",
         role, domain, difficulty, topics_list,
     )
 
@@ -314,8 +337,8 @@ async def entrypoint(ctx: JobContext):
             question_language = question_languages[current_q - 1]
             current_question_language = question_language
             language_instruction = {
-                "english": "Ask in clear professional English only.",
-                "hindi": "Ask in pure Hindi written in Devanagari script only. Keep unavoidable technical terms in English.",
+                "english":  "Ask in clear professional English only.",
+                "hindi":    "Ask in pure Hindi written in Devanagari script only. Keep unavoidable technical terms in English.",
                 "hinglish": "Ask in natural Hinglish written in Roman Hindi and English. Keep technical terms in English.",
             }[question_language]
             logger.info("[QUESTION LANGUAGE] question_number=%s language=%s", current_q, question_language)
@@ -354,16 +377,12 @@ async def entrypoint(ctx: JobContext):
             def is_valid(q: str) -> bool:
                 if not q:
                     return False
-                # Must end with a question mark
                 if not q.endswith("?"):
                     return False
-                # Must be a single line
                 if "\n" in q:
                     return False
-                # Must not contain multiple questions
                 if q.count("?") > 1:
                     return False
-                # Reject list formatting or meta-commentary
                 bad = ("1.", "2.", "3.", "- ", "Note:", "(Note", "Question:",
                        "candidate has not", "previous question", "already asked")
                 if any(b in q for b in bad):
@@ -397,19 +416,22 @@ async def entrypoint(ctx: JobContext):
             logger.info("[QUESTION DELIVERY] Sending question to browser TTS")
             interview_phase = "WAITING_FOR_ANSWER"
             await publish({
-                "type": "question_ready",
-                "question": question_text,
-                "language": question_language,
+                "type":           "question_ready",
+                "question":       question_text,
+                "language":       question_language,
                 "question_number": current_q,
                 "question_count": question_count,
             })
-            logger.info("[FLOW] SETTING WAITING_FOR_ANSWER question_number=%s phase=%s", current_q, interview_phase)
+            logger.info(
+                "[FLOW] SETTING WAITING_FOR_ANSWER question_number=%s phase=%s",
+                current_q, interview_phase,
+            )
             await publish({
-                "type": "waiting_for_answer",
+                "type":           "waiting_for_answer",
                 "question_number": current_q,
                 "question_count": question_count,
             })
-            
+
             return question_text
 
         except Exception:
@@ -460,11 +482,10 @@ async def entrypoint(ctx: JobContext):
 
     if tts_provider == "elevenlabs" and elevenlabs_api_key and elevenlabs is not None:
         eleven_voice_id = os.getenv("ELEVENLABS_VOICE_ID", "hpp4J3VqNfWAUOO0d1Us")
-        eleven_model = os.getenv("ELEVENLABS_TTS_MODEL", "eleven_turbo_v2_5")
+        eleven_model    = os.getenv("ELEVENLABS_TTS_MODEL", "eleven_turbo_v2_5")
         logger.info(
             "[VOICE] Using ElevenLabs TTS (voice_id=%s, model=%s); Gnani STT=%s",
-            eleven_voice_id,
-            eleven_model,
+            eleven_voice_id, eleven_model,
             "enabled" if use_gnani_stt else "disabled",
         )
         session_tts = elevenlabs.TTS(
@@ -501,11 +522,20 @@ async def entrypoint(ctx: JobContext):
                 _elevenlabs_import_error or "unknown import error",
             )
         elif tts_provider == "elevenlabs" and not elevenlabs_api_key:
-            logger.error("[VOICE] ElevenLabs was selected but ELEVENLABS_API_KEY is missing. Falling back to LiveKit Inference TTS.")
+            logger.error(
+                "[VOICE] ElevenLabs was selected but ELEVENLABS_API_KEY is missing. "
+                "Falling back to LiveKit Inference TTS."
+            )
         elif tts_provider == "gnani" and not use_gnani_stt:
-            logger.error("[VOICE] Gnani TTS was selected but Gnani is unavailable. Falling back to LiveKit Inference TTS.")
+            logger.error(
+                "[VOICE] Gnani TTS was selected but Gnani is unavailable. "
+                "Falling back to LiveKit Inference TTS."
+            )
         inference_voice = os.getenv("LIVEKIT_TTS_VOICE", "odysseus")
-        logger.info("[VOICE] Using LiveKit Inference TTS (Deepgram Aura-2, male voice=%s)", inference_voice)
+        logger.info(
+            "[VOICE] Using LiveKit Inference TTS (Deepgram Aura-2, male voice=%s)",
+            inference_voice,
+        )
         session_tts = inference.TTS(model="deepgram/aura-2", voice=inference_voice, language="en")
 
     session = AgentSession(
@@ -545,7 +575,11 @@ async def entrypoint(ctx: JobContext):
                 logger.info("[DEBUG-STT] TRANSCRIPT TEXT = %s", text)
                 candidate_transcript_buffer.append(text)
                 final_transcript_event.set()
-                if awaiting_late_transcript and interview_phase == "WAITING_FOR_ANSWER" and not is_processing_turn:
+                if (
+                    awaiting_late_transcript
+                    and interview_phase == "WAITING_FOR_ANSWER"
+                    and not is_processing_turn
+                ):
                     logger.info("[DEBUG-STT] LATE FINAL TRANSCRIPT — resuming answer evaluation")
                     awaiting_late_transcript = False
                     is_processing_turn = True
@@ -556,17 +590,20 @@ async def entrypoint(ctx: JobContext):
         """Replay the current question without advancing the interview state."""
         nonlocal interview_phase
         if interview_phase != "WAITING_FOR_ANSWER" or not current_question_text:
-            logger.info("[REPEAT] Ignored phase=%s question_available=%s", interview_phase, bool(current_question_text))
+            logger.info(
+                "[REPEAT] Ignored phase=%s question_available=%s",
+                interview_phase, bool(current_question_text),
+            )
             return
 
         logger.info("[REPEAT] Replaying question_number=%s", current_q)
         await publish({
-            "type": "question_ready",
-            "question": current_question_text,
-            "language": current_question_language,
+            "type":           "question_ready",
+            "question":       current_question_text,
+            "language":       current_question_language,
             "question_number": current_q,
             "question_count": question_count,
-            "is_repeat": True,
+            "is_repeat":      True,
         })
 
     @ctx.room.on("data_received")
@@ -634,7 +671,7 @@ async def entrypoint(ctx: JobContext):
     # here can race ahead of the browser's listener.
     logger.info("[ROOM] WAITING FOR BROWSER DATA LISTENER BEFORE INITIAL QUESTION")
 
-    # ── Answer Evaluation ──
+    # ── Answer Evaluation ──────────────────────────────────────────────────────
     async def evaluate_answer(question: str, answer: str) -> dict:
         logger.info("[EVAL DEBUG] question = %s", question)
         logger.info("[EVAL DEBUG] candidate_answer = %s", answer)
@@ -659,15 +696,20 @@ Provide a JSON response with the following fields:
         """
         try:
             return await request_json(prompt, "ANSWER_EVALUATION")
-        except Exception as e:
+        except Exception:
             logger.exception("[LLM] Failed to generate or parse answer evaluation JSON")
             return {
-                "score": 0, "correctness": "Evaluation unavailable", 
-                "relevance": 0, "completeness": 0, "technical_depth": 0, 
-                "feedback": "Unable to evaluate answer due to parsing error.", 
-                "strengths": [], "weaknesses": []
+                "score": 0,
+                "correctness": "Evaluation unavailable",
+                "relevance": 0,
+                "completeness": 0,
+                "technical_depth": 0,
+                "feedback": "Unable to evaluate answer due to parsing error.",
+                "strengths": [],
+                "weaknesses": [],
             }
-    # ── Candidate answer handler ─────────────────────────────────────────────
+
+    # ── Candidate answer handler ───────────────────────────────────────────────
     async def process_answer_task():
         nonlocal is_processing_turn, interview_phase, awaiting_late_transcript
         try:
@@ -686,7 +728,11 @@ Provide a JSON response with the following fields:
                 logger.info("[DEBUG-STT] EMPTY FINAL TRANSCRIPT")
                 awaiting_late_transcript = True
                 interview_phase = "WAITING_FOR_ANSWER"
-                await publish({"type": "waiting_for_answer", "question_number": current_q, "question_count": MAX_INTERVIEW_QUESTIONS})
+                await publish({
+                    "type":           "waiting_for_answer",
+                    "question_number": current_q,
+                    "question_count": MAX_INTERVIEW_QUESTIONS,
+                })
                 return
 
             logger.info("[DEBUG-STT] FINAL ANSWER ACCEPTED")
@@ -706,17 +752,17 @@ Provide a JSON response with the following fields:
             logger.info("[DEBUG-STT] EVALUATION COMPLETED")
 
             result = {
-                "question_number":  current_q,
-                "question":         current_question_text,
-                "candidate_answer": text,
-                "answer":           text,
+                "question_number":       current_q,
+                "question":              current_question_text,
+                "candidate_answer":      text,
+                "answer":                text,
                 "is_substantive_answer": substantive_answer,
-                "evaluation":       eval_data,
-                "score":            eval_data.get("score", 0),
-                "correctness":      eval_data.get("correctness", ""),
-                "feedback":         eval_data.get("feedback", ""),
-                "strengths":        eval_data.get("strengths", []),
-                "weaknesses":       eval_data.get("weaknesses", []),
+                "evaluation":            eval_data,
+                "score":                 eval_data.get("score", 0),
+                "correctness":           eval_data.get("correctness", ""),
+                "feedback":              eval_data.get("feedback", ""),
+                "strengths":             eval_data.get("strengths", []),
+                "weaknesses":            eval_data.get("weaknesses", []),
             }
             interview_results.append(result)
             logger.info("[DEBUG-STT] RESULT STORED")
@@ -737,17 +783,16 @@ Provide a JSON response with the following fields:
             logger.exception("Error in process_answer_task")
             interview_phase = "WAITING_FOR_ANSWER"
             await publish({
-                "type": "waiting_for_answer",
+                "type":           "waiting_for_answer",
                 "question_number": current_q,
                 "question_count":  MAX_INTERVIEW_QUESTIONS,
             })
         finally:
             is_processing_turn = False
             logger.info("[PROCESSING LOCK] is_processing_turn = False")
-
             return
 
-    # ── Complete interview (frontend button) ──────────────────────────────────
+    # ── Complete interview (frontend button) ───────────────────────────────────
     async def do_complete_interview():
         nonlocal report_generation_started, interview_phase
 
@@ -812,7 +857,7 @@ Provide a JSON response matching this schema exactly:
                 request_json(prompt, "FINAL_REPORT"),
                 timeout=15.0,
             )
-            
+
             report = {
                 "overall_score":       report_data.get("overall_score", overall),
                 "technical_score":     report_data.get("technical_score", overall),
@@ -836,7 +881,12 @@ Provide a JSON response matching this schema exactly:
                 strengths = ["Completed the interview"]
             if not weaknesses:
                 weaknesses = ["Review the topics covered in the interview"]
-            recommendation = "STRONG HIRE" if overall >= 85 else "HIRE" if overall >= 70 else "CONSIDER" if overall >= 50 else "NO HIRE"
+            recommendation = (
+                "STRONG HIRE" if overall >= 85
+                else "HIRE" if overall >= 70
+                else "CONSIDER" if overall >= 50
+                else "NO HIRE"
+            )
             report = {
                 "overall_score":       overall,
                 "technical_score":     overall,
@@ -852,16 +902,16 @@ Provide a JSON response matching this schema exactly:
         # no answer. This policy takes precedence over model-generated prose.
         if not has_substantive_answer:
             report.update({
-                "overall_score": 0,
-                "technical_score": 0,
+                "overall_score":       0,
+                "technical_score":     0,
                 "communication_score": 0,
-                "strengths": [],
+                "strengths":           [],
                 "weaknesses": [
                     "Provide a substantive answer to each question.",
                     "Explain your reasoning with relevant technical concepts and examples.",
                 ],
-                "final_feedback": "No substantive answers were recorded, so technical and communication skills could not be assessed.",
-                "recommendation": "NO HIRE",
+                "final_feedback":  "No substantive answers were recorded, so technical and communication skills could not be assessed.",
+                "recommendation":  "NO HIRE",
             })
 
         try:
@@ -885,7 +935,6 @@ Provide a JSON response matching this schema exactly:
 
     # user_speech_committed is intentionally NOT wired: answer processing
     # is driven by process_answer_task launched from on_data_received.
-
 
 
 if __name__ == "__main__":

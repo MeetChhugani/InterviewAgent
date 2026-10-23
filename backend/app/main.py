@@ -26,7 +26,6 @@ allowed_origins = [
 if demo_origin and demo_origin.rstrip("/") not in allowed_origins:
     allowed_origins.append(demo_origin.rstrip("/"))
 
-# Safe deployment diagnostic: URLs are public, while API keys are never logged.
 logging.getLogger("api").info("CORS allowed origins configured: %s", allowed_origins)
 
 app.add_middleware(
@@ -38,6 +37,7 @@ app.add_middleware(
     allow_origin_regex=r"https://[a-z0-9-]+\.trycloudflare\.com" if demo_tunnel_origins else None,
 )
 
+
 class InterviewSetup(BaseModel):
     domain: str = Field(min_length=1, max_length=120)
     role: str = Field(min_length=1, max_length=120)
@@ -45,7 +45,9 @@ class InterviewSetup(BaseModel):
     topics: List[str] = Field(min_length=1, max_length=20)
     num_questions: int = Field(ge=1, le=10)
 
+
 sessions = {}
+
 
 @app.post("/api/interview/session")
 async def create_session(setup: InterviewSetup):
@@ -56,44 +58,39 @@ async def create_session(setup: InterviewSetup):
         "status": "created",
         "questions_asked": 0,
         "evaluations": [],
-        "report": None
+        "report": None,
     }
-    
+
     import json
     from livekit import api
     import logging
     logger = logging.getLogger("api")
-    
+
     try:
         url = os.getenv("LIVEKIT_URL")
         key = os.getenv("LIVEKIT_API_KEY")
         secret = os.getenv("LIVEKIT_API_SECRET")
         logger.info(f"Connecting to LiveKit API at {url}")
-        
-        async with api.LiveKitAPI(
-            url=url,
-            api_key=key,
-            api_secret=secret
-        ) as lkapi:
-            # Note: Checking for existing dispatches might be complex or unnecessary 
-            # if we are creating a brand new session ID here, as we know it is new.
+
+        async with api.LiveKitAPI(url=url, api_key=key, api_secret=secret) as lkapi:
             dispatch = await lkapi.agent_dispatch.create_dispatch(
                 api.CreateAgentDispatchRequest(
                     agent_name="interviewer",
                     room=session_id,
-                    metadata=json.dumps(setup.model_dump())
+                    metadata=json.dumps(setup.model_dump()),
                 )
             )
             logger.info(
                 "DISPATCHING INTERVIEWER: agent_name=%s room=%s",
                 "interviewer",
-                session_id
+                session_id,
             )
             logger.info(f"dispatch_id={dispatch.id}")
     except Exception as e:
         logger.error(f"Failed to dispatch agent: {e}", exc_info=True)
-        
+
     return sessions[session_id]
+
 
 @app.get("/api/interview/session/{session_id}")
 async def get_session(session_id: str):
@@ -101,17 +98,21 @@ async def get_session(session_id: str):
         raise HTTPException(status_code=404, detail="Session not found")
     return sessions[session_id]
 
+
 @app.get("/api/interview/session/{session_id}/token")
 async def get_token(session_id: str, participant_name: str = "Candidate"):
     if session_id not in sessions:
         raise HTTPException(status_code=404, detail="Session not found")
-    
+
     api_key = os.getenv("LIVEKIT_API_KEY")
     api_secret = os.getenv("LIVEKIT_API_SECRET")
-    
+
     if not api_key or not api_secret:
-        raise HTTPException(status_code=500, detail="LiveKit credentials are not configured on the server")
-        
+        raise HTTPException(
+            status_code=500,
+            detail="LiveKit credentials are not configured on the server",
+        )
+
     grant = VideoGrants(room=session_id, room_join=True)
     access_token = (
         AccessToken(api_key, api_secret)
@@ -119,9 +120,10 @@ async def get_token(session_id: str, participant_name: str = "Candidate"):
         .with_identity(str(uuid.uuid4()))
         .with_name(participant_name)
     )
-    
+
     token = access_token.to_jwt()
     return {"token": token, "livekit_url": os.getenv("LIVEKIT_URL")}
+
 
 @app.post("/api/interview/session/{session_id}/complete")
 async def complete_session(session_id: str, report: dict):

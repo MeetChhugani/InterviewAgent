@@ -7,24 +7,26 @@ by simulating the relevant state variables and functions in isolation.
 import pytest
 import asyncio
 
+
 @pytest.fixture
 def anyio_backend():
     return 'asyncio'
+
 
 # ─── Minimal simulation of the interview state machine ───────────────────────
 
 def make_state(max_q=5):
     """Return a fresh state dict mirroring the agent's local variables."""
     return {
-        "MAX_INTERVIEW_QUESTIONS":  max_q,
-        "current_q":                0,
-        "current_question_text":    "",
-        "interview_results":        [],
-        "interview_phase":          "INIT",     # see agent.py for legal values
-        "is_processing_turn":       False,
+        "MAX_INTERVIEW_QUESTIONS":   max_q,
+        "current_q":                 0,
+        "current_question_text":     "",
+        "interview_results":         [],
+        "interview_phase":           "INIT",
+        "is_processing_turn":        False,
         "report_generation_started": False,
-        "question_generation_count": 0,         # test-only counter
-        "published_events":         [],          # test-only log of published messages
+        "question_generation_count": 0,    # test-only counter
+        "published_events":          [],   # test-only log of published messages
     }
 
 
@@ -242,26 +244,25 @@ async def test_duplicate_stop_blocked():
 
     # First STOP — should succeed
     assert on_stop_received() is True
-    
+
     # Simulate a second STOP arriving while the first is still processing
     assert on_stop_received() is False
-    
+
     # Now finish the first answer
     ok1 = await sim_handle_answer(s, "My answer")
     assert ok1 is True
-    
-    # First length
+
     first_len = len(s["interview_results"])
-    
+
     # The first answer processing completed, so is_processing_turn is False now.
     # However, if another STOP arrives randomly while phase is NOT WAITING_FOR_ANSWER
     # (e.g. AI is speaking), handle_user_speech will reject it.
-    # Let's artificially set phase to AI_SPEAKING to test phase guard:
     s["interview_phase"] = "AI_SPEAKING"
     assert on_stop_received() is True  # on_data_received accepts it and sets lock
-    ok2 = await sim_handle_answer(s, "Rogue answer") # handle_user_speech rejects
+    ok2 = await sim_handle_answer(s, "Rogue answer")  # handle_user_speech rejects
     assert ok2 is False
     assert len(s["interview_results"]) == first_len
+
 
 @pytest.mark.anyio
 async def test_question_does_not_trigger_second_ai_response():
@@ -293,9 +294,9 @@ async def test_evaluation_is_not_spoken():
     # Simulate answering
     s["is_processing_turn"] = True
     await sim_handle_answer(s, "My answer")
-    
-    # In our simulation, sim_handle_answer updates interview_results 
-    # but does NOT set current_question_text to the evaluation. 
+
+    # In our simulation, sim_handle_answer updates interview_results
+    # but does NOT set current_question_text to the evaluation.
     # It calls sim_generate_question("after_answer") which sets the text to Q2.
     assert s["current_question_text"].startswith("Simulated question 2")
 
@@ -306,14 +307,14 @@ async def test_next_question_only_after_evaluation():
     s = make_state()
     await sim_generate_question(s, "initial")
     assert s["current_q"] == 1
-    
+
     # Attempting Q2 before answer evaluation should fail
     q_fail = await sim_generate_question(s, "after_answer")
     assert q_fail is None
     assert s["current_q"] == 1
-    
+
     s["is_processing_turn"] = True
     await sim_handle_answer(s, "Candidate answer")
-    
+
     # After handle_answer evaluates, Q2 is generated automatically
     assert s["current_q"] == 2

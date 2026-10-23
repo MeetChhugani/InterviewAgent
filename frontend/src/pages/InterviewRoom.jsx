@@ -11,14 +11,17 @@ import {
 } from '@livekit/components-react';
 
 import { RoomEvent } from 'livekit-client';
-import interviewerPortrait from '../assets/ai-interviewer.png';
-import interviewerSpeaking from '../assets/ai-speaking.png';
+import interviewerPortrait  from '../assets/ai-interviewer.png';
+import interviewerSpeaking  from '../assets/ai-speaking.png';
 import interviewerListening from '../assets/ai-listening.png';
+
+// ─── Push-to-talk control ────────────────────────────────────────────────────
 
 function PushToTalkControl({ interviewState, onCompleteInterview, onRepeatQuestion }) {
   const { localParticipant } = useLocalParticipant();
-  const room = useRoomContext();
+  const room  = useRoomContext();
   const state = interviewState || 'SETUP';
+
   // One-shot guard: prevents double-click sending stop_answering twice per session.
   const isStoppingRef = React.useRef(false);
 
@@ -35,9 +38,9 @@ function PushToTalkControl({ interviewState, onCompleteInterview, onRepeatQuesti
         const pub = localParticipant.getTrackPublications().find(p => p.kind === 'audio');
         console.log('[PTT AUDIO] MIC ENABLED for RECORDING', {
           publicationExists: !!pub,
-          trackSid: pub?.trackSid,
+          trackSid:     pub?.trackSid,
           trackEnabled: pub?.track?.mediaStreamTrack?.enabled,
-          isMuted: pub?.isMuted,
+          isMuted:      pub?.isMuted,
         });
       }).catch(err => console.error('[PTT AUDIO] FAILED TO ENABLE MIC', err));
     } else {
@@ -106,43 +109,43 @@ function PushToTalkControl({ interviewState, onCompleteInterview, onRepeatQuesti
     );
   }
 
-  let buttonText = "";
-  let disabled = true;
-  let onClick = null;
-  let bgClass = "bg-[#18181B] border border-[#27272A] text-[#A1A1AA]";
-  let pulse = false;
+  let buttonText = '';
+  let disabled   = true;
+  let onClick    = null;
+  let bgClass    = 'bg-[#18181B] border border-[#27272A] text-[#A1A1AA]';
+  let pulse      = false;
 
   if (state === 'SETUP' || state === 'INTERVIEW_COMPLETE') {
-    buttonText = state === 'SETUP' ? "INITIALIZING..." : "INTERVIEW COMPLETE";
-    bgClass = "bg-[#18181B] border border-[#6366F1] text-[#6366F1]";
-    disabled = true;
-    pulse = true;
+    buttonText = state === 'SETUP' ? 'INITIALIZING...' : 'INTERVIEW COMPLETE';
+    bgClass    = 'bg-[#18181B] border border-[#6366F1] text-[#6366F1]';
+    disabled   = true;
+    pulse      = true;
   } else if (state === 'PROCESSING') {
-    buttonText = "PROCESSING ANSWER...";
-    bgClass = "bg-[#18181B] border border-[#6366F1] text-[#6366F1]";
-    disabled = true;
-    pulse = true;
+    buttonText = 'PROCESSING ANSWER...';
+    bgClass    = 'bg-[#18181B] border border-[#6366F1] text-[#6366F1]';
+    disabled   = true;
+    pulse      = true;
   } else if (state === 'AI_SPEAKING') {
-    buttonText = "AI IS SPEAKING";
-    bgClass = "bg-[#18181B] border border-[#27272A] text-[#FAFAFA]";
-    disabled = true;
+    buttonText = 'AI IS SPEAKING';
+    bgClass    = 'bg-[#18181B] border border-[#27272A] text-[#FAFAFA]';
+    disabled   = true;
   } else if (state === 'RECORDING') {
-    buttonText = "STOP ANSWERING";
-    disabled = false;
-    onClick = handleStop;
-    bgClass = "bg-[#EF4444] text-white border border-[#EF4444]";
-    pulse = true;
+    buttonText = 'STOP ANSWERING';
+    disabled   = false;
+    onClick    = handleStop;
+    bgClass    = 'bg-[#EF4444] text-white border border-[#EF4444]';
+    pulse      = true;
   } else if (state === 'READY_TO_ANSWER') {
-    buttonText = "START ANSWERING";
-    disabled = false;
-    onClick = handleStart;
-    bgClass = "bg-[#FAFAFA] text-[#09090B] border border-[#FAFAFA] hover:bg-white";
+    buttonText = 'START ANSWERING';
+    disabled   = false;
+    onClick    = handleStart;
+    bgClass    = 'bg-[#FAFAFA] text-[#09090B] border border-[#FAFAFA] hover:bg-white';
   }
 
   return (
     <div className="flex flex-col items-center">
-      <button 
-        onClick={onClick} 
+      <button
+        onClick={onClick}
         disabled={disabled}
         className={`px-8 py-4 rounded-full font-semibold text-sm tracking-wide transition-all duration-300 shadow-lg ${bgClass} ${disabled ? 'opacity-70 cursor-not-allowed' : 'cursor-pointer hover:scale-[1.02] active:scale-[0.98]'} ${pulse ? 'animate-pulse' : ''}`}
       >
@@ -162,63 +165,75 @@ function PushToTalkControl({ interviewState, onCompleteInterview, onRepeatQuesti
   );
 }
 
+// ─── Agent visualizer ────────────────────────────────────────────────────────
+
 function AgentVisualizer({ interviewState }) {
   const { audioTrack } = useVoiceAssistant();
 
   const stateDetails = {
     SETUP: {
       variant: 'ready',
-      title: 'Ready for the technical challenge?',
-      detail: "You've got this. Take a breath. Your interview is about to begin.",
+      title:   'Ready for the technical challenge?',
+      detail:  "You've got this. Take a breath. Your interview is about to begin.",
     },
     AI_SPEAKING: {
       variant: 'speaking',
-      title: 'AI interviewer is speaking',
-      detail: 'Listen carefully to the question.',
+      title:   'AI interviewer is speaking',
+      detail:  'Listen carefully to the question.',
     },
     READY_TO_ANSWER: {
       variant: 'ready',
-      title: 'Your turn',
-      detail: 'Press Start Answering when you are ready.',
+      title:   'Your turn',
+      detail:  'Press Start Answering when you are ready.',
     },
     RECORDING: {
       variant: 'listening',
-      title: 'Listening…',
-      detail: 'Speak naturally, then press Stop Answering.',
+      title:   'Listening…',
+      detail:  'Speak naturally, then press Stop Answering.',
     },
     PROCESSING: {
       variant: 'processing',
-      title: 'Analyzing your answer…',
-      detail: 'Your response is being processed.',
+      title:   'Analyzing your answer…',
+      detail:  'Your response is being processed.',
     },
     WAITING_FOR_COMPLETION: {
       variant: 'complete',
-      title: 'Screening questions complete',
-      detail: 'Finish the screening to create the assessment report.',
+      title:   'Screening questions complete',
+      detail:  'Finish the screening to create the assessment report.',
     },
     GENERATING_REPORT: {
       variant: 'processing',
-      title: 'Creating assessment report…',
-      detail: 'Please keep this window open.',
+      title:   'Creating assessment report…',
+      detail:  'Please keep this window open.',
     },
   };
 
   const visualState = stateDetails[interviewState] || {
     variant: 'ready',
-    title: 'Ready for the technical challenge?',
-    detail: "You've got this. Take a breath. Your interview is about to begin.",
+    title:   'Ready for the technical challenge?',
+    detail:  "You've got this. Take a breath. Your interview is about to begin.",
   };
 
   const isSpeaking = interviewState === 'AI_SPEAKING';
 
   return (
-    <section className={`agent-visual-shell agent-visual-shell--${visualState.variant}`} aria-live="polite" aria-atomic="true">
+    <section
+      className={`agent-visual-shell agent-visual-shell--${visualState.variant}`}
+      aria-live="polite"
+      aria-atomic="true"
+    >
       <div className="agent-visual-orb" aria-hidden="true">
         <span className="agent-visual-ring agent-visual-ring--outer" />
         <span className="agent-visual-ring agent-visual-ring--inner" />
         <div className="agent-orb-core">
           {isSpeaking && audioTrack ? (
-            <BarVisualizer state="speaking" trackRef={audioTrack} className="agent-waveform" barCount={5} options={{ minHeight: 4, colors: ['#FAFAFA'] }} />
+            <BarVisualizer
+              state="speaking"
+              trackRef={audioTrack}
+              className="agent-waveform"
+              barCount={5}
+              options={{ minHeight: 4, colors: ['#FAFAFA'] }}
+            />
           ) : interviewState === 'RECORDING' ? (
             <span className="agent-mic-symbol">●</span>
           ) : interviewState === 'PROCESSING' || interviewState === 'GENERATING_REPORT' ? (
@@ -238,16 +253,19 @@ function AgentVisualizer({ interviewState }) {
   );
 }
 
+// ─── Interview room content (inside LiveKitRoom) ──────────────────────────────
+
 function InterviewRoomContent({ sessionData, sessionId }) {
-  const room = useRoomContext();
+  const room     = useRoomContext();
   const navigate = useNavigate();
   const [interviewState, setInterviewState] = useState('SETUP');
   const [browserSpeechActive, setBrowserSpeechActive] = useState(false);
   const [currentQ, setCurrentQ] = useState(1);
-  const [totalQ, setTotalQ] = useState(sessionData.setup.num_questions || 5);
+  const [totalQ, setTotalQ]     = useState(sessionData.setup.num_questions || 5);
   const speechRequestRef = useRef(0);
-  const speechTimerRef = useRef(null);
+  const speechTimerRef   = useRef(null);
 
+  // ── Browser Speech Synthesis (fallback TTS) ───────────────────────────────
   const speakQuestionInBrowser = useCallback(async (question, questionLanguage = 'english') => {
     if (!question?.trim() || !('speechSynthesis' in window)) {
       setBrowserSpeechActive(false);
@@ -262,10 +280,7 @@ function InterviewRoomContent({ sessionData, sessionId }) {
     // briefly for voiceschanged avoids the crackle/truncated first question.
     const voices = await new Promise((resolve) => {
       const available = window.speechSynthesis.getVoices();
-      if (available.length) {
-        resolve(available);
-        return;
-      }
+      if (available.length) { resolve(available); return; }
       const finish = () => {
         window.speechSynthesis.removeEventListener('voiceschanged', finish);
         resolve(window.speechSynthesis.getVoices());
@@ -276,18 +291,16 @@ function InterviewRoomContent({ sessionData, sessionId }) {
     if (speechRequestRef.current !== requestId) return;
 
     const utterance = new SpeechSynthesisUtterance(question);
-    const isHindi = questionLanguage === 'hindi' || /[\u0900-\u097F]/.test(question);
-    const hindiVoice = voices.find((voice) => /^hi[-_]/i.test(voice.lang));
-    const indianMaleVoice = voices.find((voice) =>
-      /en[-_]in/i.test(voice.lang) && /ravi|rishi|prabhat|hemant|male/i.test(voice.name),
-    );
-    const maleVoice = voices.find((voice) => /ravi|rishi|prabhat|hemant|david|mark|male/i.test(voice.name));
-    const indianVoice = voices.find((voice) => /en[-_]in/i.test(voice.lang));
-    const voice = isHindi ? (hindiVoice || indianVoice) : (indianMaleVoice || maleVoice || indianVoice);
+    const isHindi       = questionLanguage === 'hindi' || /[\u0900-\u097F]/.test(question);
+    const hindiVoice    = voices.find((v) => /^hi[-_]/i.test(v.lang));
+    const indianMale    = voices.find((v) => /en[-_]in/i.test(v.lang) && /ravi|rishi|prabhat|hemant|male/i.test(v.name));
+    const maleVoice     = voices.find((v) => /ravi|rishi|prabhat|hemant|david|mark|male/i.test(v.name));
+    const indianVoice   = voices.find((v) => /en[-_]in/i.test(v.lang));
+    const voice         = isHindi ? (hindiVoice || indianVoice) : (indianMale || maleVoice || indianVoice);
 
     if (voice) utterance.voice = voice;
-    utterance.lang = voice?.lang || (isHindi ? 'hi-IN' : 'en-IN');
-    utterance.rate = 0.96;
+    utterance.lang  = voice?.lang || (isHindi ? 'hi-IN' : 'en-IN');
+    utterance.rate  = 0.96;
     utterance.pitch = 1;
     utterance.onend = utterance.onerror = () => {
       if (speechRequestRef.current === requestId) setBrowserSpeechActive(false);
@@ -304,6 +317,7 @@ function InterviewRoomContent({ sessionData, sessionId }) {
     }, 120);
   }, []);
 
+  // Cancel any in-progress speech on unmount
   useEffect(() => () => {
     speechRequestRef.current += 1;
     if (speechTimerRef.current) window.clearTimeout(speechTimerRef.current);
@@ -312,72 +326,73 @@ function InterviewRoomContent({ sessionData, sessionId }) {
 
   const displayedInterviewState = browserSpeechActive ? 'AI_SPEAKING' : interviewState;
   const interviewerVisual = interviewState === 'AI_SPEAKING'
-    ? { source: interviewerSpeaking, label: 'AI interviewer speaking' }
+    ? { source: interviewerSpeaking,  label: 'AI interviewer speaking'  }
     : interviewState === 'RECORDING'
       ? { source: interviewerListening, label: 'AI interviewer listening' }
-      : { source: interviewerPortrait, label: 'AI interviewer avatar' };
+      : { source: interviewerPortrait,  label: 'AI interviewer avatar'   };
 
+  // ── Complete interview handler ─────────────────────────────────────────────
   const handleCompleteInterview = async () => {
     setInterviewState('GENERATING_REPORT');
-    const payload = JSON.stringify({ type: "complete_interview" });
+    const payload = JSON.stringify({ type: 'complete_interview' });
     const encoder = new TextEncoder();
     if (room && room.localParticipant) {
       await room.localParticipant.publishData(encoder.encode(payload), { reliable: true });
     }
-    console.log("[PTT] Sent complete_interview");
+    console.log('[PTT] Sent complete_interview');
   };
 
+  // ── Repeat question handler ───────────────────────────────────────────────
   const handleRepeatQuestion = async () => {
-    const payload = JSON.stringify({ type: "repeat_question" });
+    const payload = JSON.stringify({ type: 'repeat_question' });
     const encoder = new TextEncoder();
     if (room && room.localParticipant) {
       await room.localParticipant.publishData(encoder.encode(payload), { reliable: true });
     }
-    console.log("[PTT] Sent repeat_question");
+    console.log('[PTT] Sent repeat_question');
   };
 
+  // ── Data channel listener ─────────────────────────────────────────────────
   useEffect(() => {
     if (!room) return;
-    
-    const handleData = (payload, participant, kind, topic) => {
+
+    const handleData = (payload) => {
       try {
         const data = JSON.parse(new TextDecoder().decode(payload));
-        console.log("[DATA IN]", data);
+        console.log('[DATA IN]', data);
 
-        if (data.type === 'interview_state' || data.type === 'question_state' || data.type === 'question_started') {
-          if (data.state) {
-            setInterviewState(data.state);
-          }
-          if (data.question_number) {
-            setCurrentQ(data.question_number);
-          }
-          if (data.question_count) {
-            setTotalQ(data.question_count);
-          }
+        if (
+          data.type === 'interview_state' ||
+          data.type === 'question_state'  ||
+          data.type === 'question_started'
+        ) {
+          if (data.state)           setInterviewState(data.state);
+          if (data.question_number) setCurrentQ(data.question_number);
+          if (data.question_count)  setTotalQ(data.question_count);
         }
 
         if (data.type === 'question_ready') {
           if (data.question_number) setCurrentQ(data.question_number);
-          if (data.question_count) setTotalQ(data.question_count);
+          if (data.question_count)  setTotalQ(data.question_count);
           speakQuestionInBrowser(data.question, data.language);
         }
 
         if (data.type === 'waiting_for_answer') {
-          console.log("[FLOW] waiting_for_answer received — transitioning to READY_TO_ANSWER");
+          console.log('[FLOW] waiting_for_answer received — transitioning to READY_TO_ANSWER');
           setInterviewState('READY_TO_ANSWER');
           if (data.question_number) setCurrentQ(data.question_number);
-          if (data.question_count) setTotalQ(data.question_count);
+          if (data.question_count)  setTotalQ(data.question_count);
         }
 
         if (data.type === 'interview_ready_to_complete') {
-          console.log("[FLOW] interview_ready_to_complete received — showing Complete Interview button");
+          console.log('[FLOW] interview_ready_to_complete received — showing Complete Interview button');
           setInterviewState('WAITING_FOR_COMPLETION');
           if (data.question_number) setCurrentQ(data.question_number);
-          if (data.question_count) setTotalQ(data.question_count);
+          if (data.question_count)  setTotalQ(data.question_count);
         }
 
         if (data.type === 'interview_completed') {
-          console.log("[FLOW] interview_completed received — navigating to report");
+          console.log('[FLOW] interview_completed received — navigating to report');
           navigate(`/report?session_id=${sessionId}`);
         }
 
@@ -391,24 +406,20 @@ function InterviewRoomContent({ sessionData, sessionId }) {
           navigate(`/report?session_id=${sessionId}`);
         }
       } catch (e) {
-        console.error("Failed to parse data message", e);
+        console.error('Failed to parse data message', e);
       }
     };
-    
+
     room.on(RoomEvent.DataReceived, handleData);
-    return () => {
-      room.off(RoomEvent.DataReceived, handleData);
-    };
+    return () => { room.off(RoomEvent.DataReceived, handleData); };
   }, [room, navigate, sessionId, speakQuestionInBrowser]);
 
-  // The final LiveKit data packet can be missed if the room disconnects while
-  // the report is being saved. Poll the API during report generation so the
-  // candidate is redirected as soon as the persisted report is available.
+  // ── Report polling (fallback if LiveKit disconnects during generation) ────
   useEffect(() => {
     if (interviewState !== 'GENERATING_REPORT') return undefined;
 
     let cancelled = false;
-    let attempts = 0;
+    let attempts  = 0;
     const checkForReport = async () => {
       attempts += 1;
       try {
@@ -420,10 +431,8 @@ function InterviewRoomContent({ sessionData, sessionId }) {
       } catch (error) {
         console.warn('[REPORT] Waiting for saved report', error);
       }
-
-      // The worker limits narrative generation to 15 seconds. If it still
-      // has not saved a report after a minute, restore the completion control
-      // instead of leaving the candidate on an infinite loader.
+      // The worker limits narrative generation to 15 seconds. If the report
+      // still hasn't saved after a minute, restore the completion button.
       if (!cancelled && attempts >= 40) {
         setInterviewState('WAITING_FOR_COMPLETION');
       }
@@ -431,15 +440,12 @@ function InterviewRoomContent({ sessionData, sessionId }) {
 
     checkForReport();
     const pollTimer = window.setInterval(checkForReport, 1500);
-    return () => {
-      cancelled = true;
-      window.clearInterval(pollTimer);
-    };
+    return () => { cancelled = true; window.clearInterval(pollTimer); };
   }, [interviewState, navigate, sessionId]);
 
-  // Confirm that the browser has registered its data listener before the
-  // worker sends Question 1. This prevents the initial question from being
-  // lost during the LiveKit room-join race.
+  // ── Candidate-ready handshake ─────────────────────────────────────────────
+  // Tell the worker that the browser's data listener is installed before
+  // Question 1 is fired. LiveKit data packets are not replayed to late joiners.
   useEffect(() => {
     if (!room) return undefined;
 
@@ -468,11 +474,9 @@ function InterviewRoomContent({ sessionData, sessionId }) {
     };
   }, [room]);
 
+  // ── Debug log ─────────────────────────────────────────────────────────────
   useEffect(() => {
-    console.log("[PTT STATE]", {
-      interviewState,
-      currentQuestion: currentQ
-    });
+    console.log('[PTT STATE]', { interviewState, currentQuestion: currentQ });
   }, [interviewState, currentQ]);
 
   return (
@@ -497,21 +501,21 @@ function InterviewRoomContent({ sessionData, sessionId }) {
 
       {/* Progress Bar */}
       <div className="w-full h-1 bg-[#18181B]">
-        <div 
+        <div
           className="h-full bg-[#6366F1] transition-all duration-500 ease-out"
           style={{ width: `${(currentQ / totalQ) * 100}%` }}
-        ></div>
+        />
       </div>
 
       <main className="flex-1 flex flex-col items-center justify-center p-4 md:p-8 w-full max-w-7xl mx-auto">
         <div className="interview-room-layout w-full h-full min-h-[600px]">
-          
+
           {/* Left Column: Visualizer & Controls */}
           <div className="interview-control-panel w-full flex flex-col items-center justify-center space-y-12 bg-[#111113] border border-[#27272A] rounded-[24px] p-8 shadow-2xl relative overflow-hidden">
-            <div className="absolute top-0 left-0 w-full h-1/2 bg-gradient-to-b from-[#6366F1]/5 to-transparent pointer-events-none"></div>
+            <div className="absolute top-0 left-0 w-full h-1/2 bg-gradient-to-b from-[#6366F1]/5 to-transparent pointer-events-none" />
 
             <AgentVisualizer interviewState={displayedInterviewState} />
-            
+
             <div className="w-full flex justify-center pt-8">
               <PushToTalkControl
                 interviewState={displayedInterviewState}
@@ -520,7 +524,7 @@ function InterviewRoomContent({ sessionData, sessionId }) {
               />
             </div>
 
-            <button 
+            <button
               onClick={() => navigate(`/report?session_id=${sessionId}`)}
               className="text-[#A1A1AA] hover:text-[#EF4444] text-[11px] font-medium uppercase tracking-wider transition-colors mt-auto"
             >
@@ -528,16 +532,14 @@ function InterviewRoomContent({ sessionData, sessionId }) {
             </button>
           </div>
 
+          {/* Right Column: AI Interviewer Presence */}
           <aside className="interviewer-presence" aria-label="AI interviewer">
             <div className="interviewer-presence-glow" aria-hidden="true" />
             <div className="interviewer-avatar-wrap">
               <span className="interviewer-avatar-ring interviewer-avatar-ring--one" aria-hidden="true" />
               <span className="interviewer-avatar-ring interviewer-avatar-ring--two" aria-hidden="true" />
               <div className="interviewer-avatar">
-                <img
-                  src={interviewerVisual.source}
-                  alt={interviewerVisual.label}
-                />
+                <img src={interviewerVisual.source} alt={interviewerVisual.label} />
               </div>
               <span className="interviewer-online-dot" aria-hidden="true" />
             </div>
@@ -548,36 +550,40 @@ function InterviewRoomContent({ sessionData, sessionId }) {
             </div>
             <div className="interviewer-presence-status">
               <span className="interviewer-presence-status-dot" aria-hidden="true" />
-              <span>{displayedInterviewState === 'AI_SPEAKING' ? 'Speaking now' : displayedInterviewState === 'RECORDING' ? 'Listening to candidate' : 'Ready for the next response'}</span>
+              <span>
+                {displayedInterviewState === 'AI_SPEAKING'
+                  ? 'Speaking now'
+                  : displayedInterviewState === 'RECORDING'
+                    ? 'Listening to candidate'
+                    : 'Ready for the next response'}
+              </span>
             </div>
           </aside>
 
         </div>
       </main>
-      
     </>
   );
 }
 
+// ─── InterviewRoom (top-level, renders LiveKitRoom) ───────────────────────────
+
 export default function InterviewRoom() {
   const [searchParams] = useSearchParams();
   const sessionId = searchParams.get('session_id');
-  const [token, setToken] = useState(null);
-  const [url, setUrl] = useState(null);
-  const [error, setError] = useState(null);
+  const [token,       setToken]       = useState(null);
+  const [url,         setUrl]         = useState(null);
+  const [error,       setError]       = useState(null);
   const [sessionData, setSessionData] = useState(null);
   const navigate = useNavigate();
 
   useEffect(() => {
-    if (!sessionId) {
-      navigate('/');
-      return;
-    }
+    if (!sessionId) { navigate('/'); return; }
     const fetchData = async () => {
       try {
         const [tokenRes, sessionRes] = await Promise.all([
-          api.get(`/api/interview/session/${sessionId}/token`, { timeout: 12000 }),
-          api.get(`/api/interview/session/${sessionId}`, { timeout: 12000 })
+          api.get(`/api/interview/session/${sessionId}/token`,  { timeout: 12000 }),
+          api.get(`/api/interview/session/${sessionId}`,        { timeout: 12000 }),
         ]);
         setToken(tokenRes.data.token);
         setUrl(tokenRes.data.livekit_url);
@@ -590,11 +596,16 @@ export default function InterviewRoom() {
     fetchData();
   }, [sessionId, navigate]);
 
-  if (error) return <div className="min-h-screen bg-[#09090B] flex items-center justify-center text-[#EF4444] p-4 font-sans">{error}</div>;
+  if (error) return (
+    <div className="min-h-screen bg-[#09090B] flex items-center justify-center text-[#EF4444] p-4 font-sans">
+      {error}
+    </div>
+  );
+
   if (!token || !url || !sessionData) return (
     <div className="min-h-screen bg-[#09090B] flex items-center justify-center text-[#A1A1AA] font-sans">
       <div className="flex flex-col items-center space-y-4">
-        <div className="w-6 h-6 border-2 border-[#6366F1] border-t-transparent rounded-full animate-spin"></div>
+        <div className="w-6 h-6 border-2 border-[#6366F1] border-t-transparent rounded-full animate-spin" />
         <div className="text-[12px] uppercase tracking-wider">Connecting to secure screening...</div>
       </div>
     </div>

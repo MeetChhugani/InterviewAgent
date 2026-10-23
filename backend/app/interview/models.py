@@ -1,12 +1,14 @@
 from pydantic import BaseModel, Field
 from typing import List
 
+
 class InterviewSetup(BaseModel):
     domain: str = Field(min_length=1, max_length=120)
     role: str = Field(min_length=1, max_length=120)
     difficulty: str = Field(min_length=1, max_length=40)
     topics: List[str] = Field(min_length=1, max_length=20)
     num_questions: int = Field(ge=1, le=10)
+
 
 class AnswerEvaluation(BaseModel):
     score: int
@@ -18,6 +20,7 @@ class AnswerEvaluation(BaseModel):
     strengths: List[str]
     weaknesses: List[str]
 
+
 class QuestionResult(BaseModel):
     question: str
     answer: str
@@ -26,6 +29,7 @@ class QuestionResult(BaseModel):
     feedback: str
     strengths: List[str]
     weaknesses: List[str]
+
 
 class InterviewReport(BaseModel):
     overall_score: int

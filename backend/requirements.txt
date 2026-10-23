@@ -6,7 +6,10 @@ livekit-plugins-groq
 livekit-plugins-gnani
 livekit-plugins-elevenlabs
 livekit-plugins-silero
+livekit-plugins-inference
 python-dotenv
 pydantic
 pytest
+pytest-anyio
+anyio
 httpx
