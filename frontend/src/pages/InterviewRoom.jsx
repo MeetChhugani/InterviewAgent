@@ -374,7 +374,11 @@ function InterviewRoomContent({ sessionData, sessionId }) {
         if (data.type === 'question_ready') {
           if (data.question_number) setCurrentQ(data.question_number);
           if (data.question_count)  setTotalQ(data.question_count);
-          speakQuestionInBrowser(data.question, data.language);
+          // Deepgram/LiveKit voice is the default. Browser speech is kept only
+          // for the backend's explicit provider-failure fallback.
+          if (data.speak_in_browser !== false) {
+            speakQuestionInBrowser(data.question, data.language);
+          }
         }
 
         if (data.type === 'waiting_for_answer') {
