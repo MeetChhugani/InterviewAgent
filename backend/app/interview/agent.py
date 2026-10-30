@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import os
 import json
 import httpx
@@ -26,6 +27,7 @@ import logging
 
 load_dotenv()
 logger = logging.getLogger("interviewer")
+AGENT_NAME = os.getenv("LIVEKIT_AGENT_NAME", "interviewer").strip() or "interviewer"
 
 # A provider-side TTS stream can occasionally remain open without returning an
 # error. Do not let that leave a candidate session permanently in AI_SPEAKING.
@@ -154,7 +156,7 @@ _preloaded_vad = silero.VAD.load()
 logger.info("[STARTUP] Silero VAD model ready")
 
 
-@server.rtc_session(agent_name="interviewer")
+@server.rtc_session(agent_name=AGENT_NAME)
 async def entrypoint(ctx: JobContext):
     logger.info("[ROOM] ENTRYPOINT START")
     logger.info("[ROOM] JOB ROOM = %s", ctx.room.name)
@@ -229,7 +231,10 @@ async def entrypoint(ctx: JobContext):
     difficulty  = setup.get("difficulty", "Unknown Difficulty")
     topics_list = setup.get("topics", [])
     topics_str  = ", ".join(topics_list)
-    groq_model  = os.getenv("GROQ_LLM_MODEL", "llama-3.1-8b-instant")
+    # Llama 3.1 8B is no longer available to this Groq account. Keep a
+    # supported default so a missing environment variable cannot leave the
+    # interview frozen before its first question.
+    groq_model  = os.getenv("GROQ_LLM_MODEL", "openai/gpt-oss-20b")
     # Interviews are intentionally English-only. Keeping this in code (rather
     # than relying only on an environment variable) prevents an old Railway
     # variable from unexpectedly returning Hindi or Hinglish questions.
@@ -350,9 +355,10 @@ async def entrypoint(ctx: JobContext):
                 f"DIFFICULTY: {difficulty}\n"
                 f"TOPICS: {topics_str}\n"
                 f"LANGUAGE: {language_instruction}\n\n"
-                "Output EXACTLY ONE interview question as plain text.\n"
+                "Output EXACTLY ONE concise, natural-sounding interview question as plain text.\n"
                 "Rules:\n"
                 "- One question only, nothing else.\n"
+                "- Keep it below 35 words so it is comfortable to hear and answer aloud.\n"
                 "- No bullets, numbers, or labels.\n"
                 "- No notes, explanations, or meta-commentary.\n"
                 "- End with exactly one question mark.\n"
@@ -409,16 +415,17 @@ async def entrypoint(ctx: JobContext):
 
             current_question_text = question_text
 
-            # ── Deliver scripted question for browser speech synthesis ─────────
-            # Provider-side TTS can be unavailable during a temporary public
-            # demo. The client uses the browser's system voice to speak this
-            # exact text and keeps the existing LiveKit data-channel flow.
-            logger.info("[QUESTION DELIVERY] Sending question to browser TTS")
+            # ── Deliver scripted question ──────────────────────────────────────
+            # Browser speech is a safety fallback only. The provider voice is
+            # substantially more natural and is streamed through the LiveKit
+            # room, so it sounds consistent on every browser/device.
+            provider_speech_played = await deliver_question_audio(question_text)
             interview_phase = "WAITING_FOR_ANSWER"
             await publish({
                 "type":           "question_ready",
                 "question":       question_text,
                 "language":       question_language,
+                "speak_in_browser": not provider_speech_played,
                 "question_number": current_q,
                 "question_count": question_count,
             })
@@ -494,15 +501,20 @@ async def entrypoint(ctx: JobContext):
             model=eleven_model,
         )
     elif tts_provider == "gnani" and use_gnani_stt:
-        gnani_voice = os.getenv("GNANI_TTS_VOICE", "Vikrant")
+        # Use a natural Indian-English interviewer voice by default. The
+        # interview questions are English-only, so use the explicit Indian
+        # English locale rather than automatic language detection.
+        gnani_voice = os.getenv("GNANI_TTS_VOICE", "Kaveri")
+        gnani_language = os.getenv("GNANI_TTS_LANGUAGE", "en-IN")
         logger.info(
-            "[VOICE] Using Gnani Indian-language STT/TTS (model=timbre-v2.5, voice=%s, language=auto)",
+            "[VOICE] Using Gnani Indian TTS (model=timbre-v2.5, voice=%s, language=%s)",
             gnani_voice,
+            gnani_language,
         )
         session_tts = gnani.TTS(
             model="timbre-v2.5",
             voice=gnani_voice,
-            language="auto",
+            language=gnani_language,
             sample_rate=16000,
             # The provider's REST endpoint is used below through LiveKit's
             # StreamAdapter. Gnani's realtime WebSocket stream can remain open
@@ -531,9 +543,11 @@ async def entrypoint(ctx: JobContext):
                 "[VOICE] Gnani TTS was selected but Gnani is unavailable. "
                 "Falling back to LiveKit Inference TTS."
             )
-        inference_voice = os.getenv("LIVEKIT_TTS_VOICE", "odysseus")
+        # Thalia has a warm, professional delivery that suits a calm technical
+        # interviewer better than the previous more synthetic default.
+        inference_voice = os.getenv("LIVEKIT_TTS_VOICE", "thalia")
         logger.info(
-            "[VOICE] Using LiveKit Inference TTS (Deepgram Aura-2, male voice=%s)",
+            "[VOICE] Using LiveKit Inference TTS (Deepgram Aura-2, voice=%s)",
             inference_voice,
         )
         session_tts = inference.TTS(model="deepgram/aura-2", voice=inference_voice, language="en")
@@ -544,6 +558,47 @@ async def entrypoint(ctx: JobContext):
         vad=_preloaded_vad,
         turn_detection="manual",
     )
+
+    async def deliver_question_audio(question_text: str) -> bool:
+        """Speak through the selected provider, with a safe browser fallback.
+
+        Returning False tells the frontend to use browser SpeechSynthesis. This
+        preserves an interview even when a provider is unavailable, while the
+        normal path uses the much more natural Deepgram/LiveKit voice.
+        """
+        delivery_mode = os.getenv("INTERVIEW_VOICE_DELIVERY", "provider").strip().lower()
+        if delivery_mode == "browser":
+            logger.info("[QUESTION DELIVERY] Browser TTS selected by configuration")
+            return False
+
+        speech = None
+        try:
+            logger.info("[QUESTION DELIVERY] Starting provider voice playback")
+            await broadcast_state("AI_SPEAKING", current_q)
+            speech = session.say(
+                question_text,
+                allow_interruptions=False,
+                add_to_chat_ctx=False,
+            )
+            # Questions are intentionally short. Do not let a provider-side
+            # stream that never closes block the entire interview.
+            await asyncio.wait_for(
+                speech.wait_for_playout(),
+                timeout=min(TTS_SPEECH_TIMEOUT_SECONDS, 25.0),
+            )
+            if speech.exception() is not None:
+                raise speech.exception()
+            logger.info("[QUESTION DELIVERY] Provider voice playback complete")
+            return True
+        except Exception as error:
+            logger.warning(
+                "[QUESTION DELIVERY] Provider voice failed (%s); using browser fallback",
+                error,
+            )
+            if speech is not None:
+                with contextlib.suppress(Exception):
+                    speech.interrupt(force=True)
+            return False
 
     @session.on("agent_state_changed")
     def on_agent_state_changed(ev: AgentStateChangedEvent):
@@ -597,10 +652,12 @@ async def entrypoint(ctx: JobContext):
             return
 
         logger.info("[REPEAT] Replaying question_number=%s", current_q)
+        provider_speech_played = await deliver_question_audio(current_question_text)
         await publish({
             "type":           "question_ready",
             "question":       current_question_text,
             "language":       current_question_language,
+            "speak_in_browser": not provider_speech_played,
             "question_number": current_q,
             "question_count": question_count,
             "is_repeat":      True,

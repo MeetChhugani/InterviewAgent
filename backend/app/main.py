@@ -10,6 +10,7 @@ import logging
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
+AGENT_NAME = os.getenv("LIVEKIT_AGENT_NAME", "interviewer").strip() or "interviewer"
 
 app = FastAPI(title="Voice Interviewer API")
 
@@ -75,14 +76,14 @@ async def create_session(setup: InterviewSetup):
         async with api.LiveKitAPI(url=url, api_key=key, api_secret=secret) as lkapi:
             dispatch = await lkapi.agent_dispatch.create_dispatch(
                 api.CreateAgentDispatchRequest(
-                    agent_name="interviewer",
+                    agent_name=AGENT_NAME,
                     room=session_id,
                     metadata=json.dumps(setup.model_dump()),
                 )
             )
             logger.info(
                 "DISPATCHING INTERVIEWER: agent_name=%s room=%s",
-                "interviewer",
+                AGENT_NAME,
                 session_id,
             )
             logger.info(f"dispatch_id={dispatch.id}")
