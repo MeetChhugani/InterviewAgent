@@ -255,7 +255,7 @@ async def entrypoint(ctx: JobContext):
         chat_ctx = llm.ChatContext()
         chat_ctx.add_message(
             role="system",
-            content="You are an expert technical interviewer evaluator. Output ONLY valid JSON matching the requested schema.",
+            content="You are an expert interviewer and assessor across industries and professions. Adapt your evaluation to the role and output ONLY valid JSON matching the requested schema.",
         )
         chat_ctx.add_message(role="user", content=prompt)
         stream = groq.LLM(model=groq_model).chat(chat_ctx=chat_ctx)
@@ -349,14 +349,17 @@ async def entrypoint(ctx: JobContext):
             logger.info("[QUESTION LANGUAGE] question_number=%s language=%s", current_q, question_language)
 
             prompt = (
-                f"You are a technical interviewer.\n"
+                f"You are an experienced interviewer and subject-matter expert for the candidate's specific role.\n"
                 f"ROLE: {role}\n"
                 f"DOMAIN: {domain}\n"
                 f"DIFFICULTY: {difficulty}\n"
-                f"TOPICS: {topics_str}\n"
+                f"FOCUS AREAS: {topics_str if topics_str else 'None specified; infer the most important role-specific competencies from the role and domain.'}\n"
                 f"LANGUAGE: {language_instruction}\n\n"
                 "Output EXACTLY ONE concise, natural-sounding interview question as plain text.\n"
                 "Rules:\n"
+                "- Tailor the question to the stated role and domain; never assume the candidate works in software or technology.\n"
+                "- Use practical, scenario-based, behavioral, domain knowledge, or technical questions as appropriate for the role.\n"
+                "- If focus areas are provided, prioritize them; otherwise infer relevant competencies from the role.\n"
                 "- One question only, nothing else.\n"
                 "- Keep it below 35 words so it is comfortable to hear and answer aloud.\n"
                 "- No bullets, numbers, or labels.\n"
@@ -404,13 +407,13 @@ async def entrypoint(ctx: JobContext):
                 logger.info("[LLM] RETRY TEXT READY: %s", question_text)
                 if not is_valid(question_text):
                     logger.warning("[VALIDATION FAILED TWICE] Using fallback.")
-                    fallback_topic = topics_list[0] if topics_list else "your field"
+                    fallback_topic = topics_list[0] if topics_list else f"a core responsibility of a {role}"
                     question_text = (
-                        f"क्या आप {fallback_topic} से संबंधित किसी मूल अवधारणा को समझा सकते हैं?"
+                        f"क्या आप {fallback_topic} से जुड़ी किसी मुख्य जिम्मेदारी को निभाने का अपना तरीका समझा सकते हैं?"
                         if question_language == "hindi"
-                        else f"Kya aap {fallback_topic} se related kisi core concept ko explain kar sakte hain?"
+                        else f"Aap {fallback_topic} se judi kisi main responsibility ko kaise sambhalenge?"
                         if question_language == "hinglish"
-                        else f"Can you explain a core concept related to {fallback_topic}?"
+                        else f"How would you approach a core responsibility of {role}?"
                     )
 
             current_question_text = question_text
@@ -459,10 +462,10 @@ async def entrypoint(ctx: JobContext):
     logger.info(f"ENV CHECK - GROQ_API_KEY: {'OK' if groq_api_key else 'MISSING'}")
 
     system_prompt = (
-        f"You are a technical interviewer conducting a one-on-one interview.\n"
+        f"You are an experienced interviewer conducting a one-on-one interview for the candidate's specific role.\n"
         f"ROLE: {role}\nDOMAIN: {domain}\nDIFFICULTY: {difficulty}\n"
         f"FOCUS TOPICS: {topics_str}\n\n"
-        "Ask exactly one focused technical question per turn. "
+        "Ask exactly one focused role-specific question per turn, using practical, scenario-based, behavioral, domain-specific, or technical questions as appropriate. "
         "Never list multiple questions. Never evaluate or comment on answers. "
         "Understand candidate answers in English, Hindi, and Hinglish."
     )
@@ -733,7 +736,7 @@ async def entrypoint(ctx: JobContext):
         logger.info("[EVAL DEBUG] question = %s", question)
         logger.info("[EVAL DEBUG] candidate_answer = %s", answer)
         logger.info("[EVAL DEBUG] answer_length = %d", len(answer))
-        prompt = f"""Evaluate the candidate's answer to the following interview question.
+        prompt = f"""Evaluate the candidate's answer to the following interview question using competencies that matter for this role and domain. Do not assume the work is technical unless the role requires it.
 Domain: {domain}
 Role: {role}
 Difficulty: {difficulty}
@@ -743,10 +746,10 @@ Candidate Answer: {answer}
 
 Provide a JSON response with the following fields:
 - score (0-100)
-- correctness (string describing if it was correct)
+- correctness (string describing accuracy, quality, or effectiveness for this role)
 - relevance (0-10)
 - completeness (0-10)
-- technical_depth (0-10)
+- technical_depth (0-10; interpret as role-specific competency and depth, including nontechnical skills)
 - feedback (constructive feedback for the candidate)
 - strengths (list of strings)
 - weaknesses (list of strings)
@@ -885,7 +888,7 @@ Provide a JSON response with the following fields:
 
         logger.info("[LLM CALL] source=FINAL_REPORT")
         try:
-            prompt = f"""Generate a final interview report based on the following candidate evaluations:
+            prompt = f"""Generate a final interview report based on the following candidate evaluations. Assess fit for the specified role and domain; do not assume this is a technology role:
 Domain: {domain}
 Role: {role}
 Difficulty: {difficulty}
@@ -895,7 +898,7 @@ Evaluations:
 
 Provide a JSON response matching this schema exactly:
 - overall_score (0-100)
-- technical_score (0-100)
+- technical_score (0-100; use this field for role-specific competency, whether technical or nontechnical)
 - communication_score (0-100)
 - strengths (list of strings)
 - weaknesses (list of strings)
@@ -960,9 +963,9 @@ Provide a JSON response matching this schema exactly:
                 "strengths":           [],
                 "weaknesses": [
                     "Provide a substantive answer to each question.",
-                    "Explain your reasoning with relevant technical concepts and examples.",
+                    "Explain your reasoning with relevant role-specific knowledge and examples.",
                 ],
-                "final_feedback":  "No substantive answers were recorded, so technical and communication skills could not be assessed.",
+                "final_feedback":  "No substantive answers were recorded, so role-specific competencies and communication could not be assessed.",
                 "recommendation":  "NO HIRE",
             })
 

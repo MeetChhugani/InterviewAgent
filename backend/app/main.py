@@ -50,7 +50,7 @@ class InterviewSetup(BaseModel):
     domain: str = Field(min_length=1, max_length=120)
     role: str = Field(min_length=1, max_length=120)
     difficulty: str = Field(min_length=1, max_length=40)
-    topics: List[str] = Field(min_length=1, max_length=20)
+    topics: List[str] = Field(default_factory=list, max_length=20)
     num_questions: int = Field(ge=1, le=10)
 
 

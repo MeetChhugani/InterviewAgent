@@ -3,11 +3,11 @@ import { useNavigate } from 'react-router-dom';
 import { api } from '../api';
 
 export default function InterviewSetup() {
-  const [domain, setDomain]         = useState('Artificial Intelligence / Machine Learning');
-  const [role, setRole]             = useState('AI/ML Engineer');
+  const [domain, setDomain]         = useState('');
+  const [role, setRole]             = useState('');
   const [difficulty, setDifficulty] = useState('Intermediate');
   const [topicInput, setTopicInput] = useState('');
-  const [topics, setTopics]         = useState(['Python', 'Machine Learning', 'Deep Learning', 'NLP', 'RAG']);
+  const [topics, setTopics]         = useState([]);
   const [numQuestions, setNumQuestions] = useState(5);
   const [loading, setLoading]       = useState(false);
   const [error, setError]           = useState('');
@@ -15,12 +15,16 @@ export default function InterviewSetup() {
 
   const start = async (event) => {
     event.preventDefault();
+    if (!domain.trim() || !role.trim()) {
+      setError('Enter both a domain or industry and the target role to create a tailored screening.');
+      return;
+    }
     setLoading(true);
     setError('');
     try {
       const response = await api.post('/api/interview/session', {
-        domain,
-        role,
+        domain: domain.trim(),
+        role: role.trim(),
         difficulty,
         topics,
         num_questions: numQuestions,
@@ -54,20 +58,20 @@ export default function InterviewSetup() {
         <section className="setup-hero">
           <div className="eyebrow">AI-powered candidate screening</div>
           <h1>Screen candidates.<br />Faster. Smarter.</h1>
-          <p>AI voice interviews assess role-specific technical knowledge, communication, and candidate responses before your team invests time in a live interview.</p>
+          <p>Create a role-specific voice screening for any industry. Interview questions adapt to the job, its core skills, and the focus areas you choose.</p>
         </section>
         <div className="setup-layout">
           <form className="surface config-card" onSubmit={start}>
             <h2 className="card-title">Screening configuration</h2>
-            <p className="card-subtitle">Define the assessment criteria for this first-round technical screen.</p>
+            <p className="card-subtitle">Set the industry and role. We’ll tailor the interview to that work.</p>
             <div className="config-grid">
               <label className="field">
                 <span className="field-label">Domain</span>
-                <input className="field-input" value={domain} onChange={(e) => setDomain(e.target.value)} required aria-label="Screening domain" />
+                <input className="field-input" value={domain} onChange={(e) => setDomain(e.target.value)} placeholder="e.g. Healthcare, Finance, Retail, Education" required aria-label="Industry or domain" />
               </label>
               <label className="field">
                 <span className="field-label">Target role</span>
-                <input className="field-input" value={role} onChange={(e) => setRole(e.target.value)} required aria-label="Target role" />
+                <input className="field-input" value={role} onChange={(e) => setRole(e.target.value)} placeholder="e.g. Registered Nurse, Sales Manager, Product Designer" required aria-label="Target role" />
               </label>
               <div className="field field-wide">
                 <span className="field-label">Interview difficulty</span>
@@ -103,7 +107,7 @@ export default function InterviewSetup() {
                     value={topicInput}
                     onChange={(e) => setTopicInput(e.target.value)}
                     onKeyDown={addTopic}
-                    placeholder="Add a focus area and press Enter"
+                    placeholder="Optional: add a skill or focus area, then press Enter"
                     aria-label="Add a screening focus area"
                   />
                 </div>
@@ -132,12 +136,12 @@ export default function InterviewSetup() {
           </form>
           <aside className="surface summary-card">
             <div className="summary-kicker">Screening brief</div>
-            <h2 className="summary-role">{role}</h2>
-            <div className="summary-domain">{domain}</div>
+            <h2 className="summary-role">{role || 'Your target role'}</h2>
+            <div className="summary-domain">{domain || 'Choose any industry or field'}</div>
             <div className="summary-row"><span>Difficulty</span><b>{difficulty}</b></div>
             <div className="summary-row"><span>Questions</span><b>{numQuestions}</b></div>
-            <div className="summary-row"><span>Focus</span><b>{topics.length} areas</b></div>
-            <div className="summary-row"><span>Format</span><b>AI voice screening</b></div>
+            <div className="summary-row"><span>Focus</span><b>{topics.length ? `${topics.length} areas` : 'AI-tailored'}</b></div>
+            <div className="summary-row"><span>Format</span><b>Role-based interview</b></div>
           </aside>
         </div>
       </main>

@@ -173,7 +173,7 @@ function AgentVisualizer({ interviewState }) {
   const stateDetails = {
     SETUP: {
       variant: 'ready',
-      title:   'Ready for the technical challenge?',
+      title:   'Ready for your role-based interview?',
       detail:  "You've got this. Take a breath. Your interview is about to begin.",
     },
     AI_SPEAKING: {
@@ -210,7 +210,7 @@ function AgentVisualizer({ interviewState }) {
 
   const visualState = stateDetails[interviewState] || {
     variant: 'ready',
-    title:   'Ready for the technical challenge?',
+    title:   'Ready for your role-based interview?',
     detail:  "You've got this. Take a breath. Your interview is about to begin.",
   };
 
@@ -492,7 +492,7 @@ function InterviewRoomContent({ sessionData, sessionId }) {
         </div>
         <div className="flex items-center space-x-6">
           <div className="hidden lg:flex text-[11px] text-[#A1A1AA] uppercase tracking-widest font-semibold">
-            AI Technical Screening
+            Role-Based Screening
           </div>
           <div className="hidden md:flex text-[12px] text-[#A1A1AA] uppercase tracking-widest font-medium">
             {sessionData.setup.role}
@@ -550,7 +550,7 @@ function InterviewRoomContent({ sessionData, sessionId }) {
             </div>
             <div className="interviewer-presence-copy">
               <p className="interviewer-presence-eyebrow">AI interviewer</p>
-              <h2>Technical screening assistant</h2>
+              <h2>Role screening assistant</h2>
               <p>Guiding the candidate through this role-specific assessment.</p>
             </div>
             <div className="interviewer-presence-status">

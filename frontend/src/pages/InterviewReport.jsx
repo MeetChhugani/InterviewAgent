@@ -140,7 +140,7 @@ export default function InterviewReport() {
         {/* Score Cards */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-16">
           {report.technical_score !== undefined && (
-            <ScoreCard title="TECHNICAL SCORE" score={report.technical_score} />
+            <ScoreCard title="ROLE SKILLS SCORE" score={report.technical_score} />
           )}
           {report.communication_score !== undefined && (
             <ScoreCard title="COMMUNICATION SCORE" score={report.communication_score} />
