@@ -773,16 +773,29 @@ Provide a JSON response with the following fields:
     async def process_answer_task():
         nonlocal is_processing_turn, interview_phase, awaiting_late_transcript
         try:
-            text = ""
-            if candidate_transcript_buffer:
-                text = " ".join(candidate_transcript_buffer).strip()
+            # STT may emit several final segments for one spoken answer. Wait
+            # for a short quiet period after the latest segment before scoring,
+            # otherwise the first segment can be mistaken for the whole answer.
+            transcript_deadline = asyncio.get_running_loop().time() + 10.0
+            while True:
+                remaining = transcript_deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    break
 
-            if not text:
+                final_transcript_event.clear()
+                # With no text yet, allow the full window for the first final
+                # transcript. Once text exists, finish after 1.5 seconds with
+                # no additional segments.
+                wait_seconds = min(
+                    remaining,
+                    1.5 if candidate_transcript_buffer else remaining,
+                )
                 try:
-                    await asyncio.wait_for(final_transcript_event.wait(), timeout=10.0)
-                    text = " ".join(candidate_transcript_buffer).strip()
+                    await asyncio.wait_for(final_transcript_event.wait(), timeout=wait_seconds)
                 except asyncio.TimeoutError:
-                    pass
+                    break
+
+            text = " ".join(candidate_transcript_buffer).strip()
 
             if not text:
                 logger.info("[DEBUG-STT] EMPTY FINAL TRANSCRIPT")
