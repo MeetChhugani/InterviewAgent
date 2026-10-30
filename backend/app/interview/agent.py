@@ -862,15 +862,10 @@ Provide a JSON response with the following fields:
         logger.info("[COMPLETE_INTERVIEW] Received")
         await publish({"type": "report_started"})
 
-        if len(interview_results) < MAX_INTERVIEW_QUESTIONS:
-            logger.error(
-                "[COMPLETE_INTERVIEW] REJECTED: only %d results, need %d",
-                len(interview_results), MAX_INTERVIEW_QUESTIONS,
-            )
-            report_generation_started = False
-            return
-
-        logger.info("[REPORT] RESULTS COUNT = %d", len(interview_results))
+        logger.info(
+            "[REPORT] RESULTS COUNT = %d (configured questions=%d)",
+            len(interview_results), MAX_INTERVIEW_QUESTIONS,
+        )
         logger.info(
             "[REPORT] Final interview_results: %s",
             json.dumps(interview_results, indent=2),
