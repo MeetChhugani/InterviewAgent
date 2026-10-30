@@ -27,6 +27,13 @@ allowed_origins = [
 if demo_origin and demo_origin.rstrip("/") not in allowed_origins:
     allowed_origins.append(demo_origin.rstrip("/"))
 
+# Vercel assigns a distinct URL to every preview deployment. Restrict the
+# wildcard to this project rather than allowing arbitrary Vercel sites.
+allowed_origin_patterns = [r"https://interview-agent-[a-z0-9-]+\.vercel\.app"]
+if demo_tunnel_origins:
+    allowed_origin_patterns.append(r"https://[a-z0-9-]+\.trycloudflare\.com")
+allowed_origin_regex = "(?:" + "|".join(allowed_origin_patterns) + ")"
+
 logging.getLogger("api").info("CORS allowed origins configured: %s", allowed_origins)
 
 app.add_middleware(
@@ -35,7 +42,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    allow_origin_regex=r"https://[a-z0-9-]+\.trycloudflare\.com" if demo_tunnel_origins else None,
+    allow_origin_regex=allowed_origin_regex,
 )
 
 
