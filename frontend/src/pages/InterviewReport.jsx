@@ -17,38 +17,99 @@ export default function InterviewReport() {
   const [report,     setReport]     = useState(null);
   const [loading,    setLoading]    = useState(true);
   const [expandedQ,  setExpandedQ]  = useState(null);
+  const [loadError,  setLoadError]  = useState(false);
+  const [waitingLong, setWaitingLong] = useState(false);
 
   useEffect(() => {
+    if (!sessionId) {
+      setLoading(false);
+      setLoadError(true);
+      return undefined;
+    }
+
+    let cancelled = false;
+    let timer;
+    const startedAt = Date.now();
     const fetchReport = async () => {
       try {
         const response = await api.get(`/api/interview/session/${sessionId}`);
-        setReport(response.data.report);
+        if (cancelled) return;
+        if (response.data?.report) {
+          setReport(response.data.report);
+          setLoading(false);
+          return;
+        }
       } catch (err) {
-        console.error(err);
-      } finally {
-        setLoading(false);
+        if (cancelled) return;
+        if (err.response?.status === 404) {
+          setLoadError(true);
+          setLoading(false);
+          return;
+        }
+        console.warn('[REPORT] Waiting for report service', err);
       }
+
+      if (cancelled) return;
+      if (Date.now() - startedAt >= 90000) {
+        setLoadError(true);
+        setLoading(false);
+        return;
+      }
+      if (Date.now() - startedAt >= 20000) setWaitingLong(true);
+      timer = window.setTimeout(fetchReport, 1800);
     };
-    if (sessionId) fetchReport();
+
+    fetchReport();
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
   }, [sessionId]);
 
   if (loading) return (
-    <div className="min-h-screen bg-[#09090B] flex items-center justify-center text-[#FAFAFA] font-sans">
-      <div className="flex flex-col items-center space-y-4 animate-pulse">
-        <div className="w-6 h-6 border-2 border-[#6366F1] border-t-transparent rounded-full animate-spin" />
-        <div className="text-[12px] uppercase tracking-wider text-[#A1A1AA]">Generating Performance Report...</div>
-      </div>
+    <div className="min-h-screen bg-[#F5F6FF] text-[#20264A] font-sans flex flex-col">
+      <header className="w-full flex items-center justify-between px-6 md:px-10 py-5 border-b border-indigo-100 bg-white/80">
+        <div className="text-sm font-extrabold tracking-[0.12em] text-[#312E81]">INTERVIEWOS</div>
+        <div className="text-xs font-semibold text-[#73799A]">SCREENING COMPLETE</div>
+      </header>
+      <main className="flex-1 flex items-center justify-center p-6">
+        <section className="w-full max-w-xl rounded-[28px] border border-indigo-100 bg-white px-8 py-12 md:px-14 text-center shadow-[0_28px_80px_rgba(60,69,145,0.12)]">
+          <div className="relative mx-auto mb-8 grid h-24 w-24 place-items-center">
+            <div className="absolute inset-0 rounded-full border-[3px] border-indigo-100" />
+            <div className="absolute inset-0 rounded-full border-[3px] border-transparent border-t-indigo-600 animate-spin" />
+            <div className="h-12 w-12 rounded-2xl bg-gradient-to-br from-violet-600 to-cyan-500 shadow-lg shadow-indigo-200" />
+          </div>
+          <p className="mb-3 text-[11px] font-extrabold uppercase tracking-[0.2em] text-indigo-600">Thank you for your time</p>
+          <h1 className="text-3xl md:text-4xl font-extrabold tracking-tight text-[#20264A]">Your screening is complete</h1>
+          <p className="mx-auto mt-4 max-w-md text-sm md:text-base leading-relaxed text-[#73799A]">
+            {waitingLong
+              ? 'We’re still preparing your report. This can take a little longer; you can keep this page open.'
+              : 'We’re bringing your responses together and preparing your screening report.'}
+          </p>
+          <div className="mt-9 flex items-center justify-center gap-2 text-xs font-bold text-[#526080]">
+            <span className="h-2 w-2 rounded-full bg-emerald-500" /> Interview finished
+            <span className="mx-2 h-px w-8 bg-indigo-200" />
+            <span className="h-2 w-2 rounded-full bg-indigo-500 animate-pulse" /> Report in progress
+          </div>
+        </section>
+      </main>
+      <footer className="pb-6 text-center text-xs text-[#9298B1]">You may leave this page open while the report is prepared.</footer>
     </div>
   );
 
   if (!report) return (
-    <div className="min-h-screen bg-[#09090B] flex items-center justify-center font-sans">
-      <div className="text-center p-8 bg-[#111113] border border-[#27272A] rounded-[16px] shadow-2xl">
-        <div className="text-[#EF4444] mb-4 text-4xl">⚠</div>
-        <div className="text-[#FAFAFA] font-semibold mb-2">Screening report unavailable</div>
-        <div className="text-[#A1A1AA] text-sm mb-6">This candidate screening report is unavailable or incomplete.</div>
-        <Link to="/" className="text-[#09090B] bg-[#FAFAFA] px-6 py-2.5 rounded-[10px] text-sm font-semibold hover:bg-white transition-colors">
-          Create screening
+    <div className="min-h-screen bg-[#F5F6FF] flex items-center justify-center p-6 font-sans text-[#20264A]">
+      <div className="w-full max-w-lg text-center p-9 md:p-12 bg-white border border-indigo-100 rounded-[24px] shadow-[0_24px_70px_rgba(60,69,145,0.1)]">
+        <div className="mx-auto mb-6 grid h-14 w-14 place-items-center rounded-2xl bg-amber-50 text-amber-600 text-2xl">!</div>
+        <p className="text-[11px] font-extrabold uppercase tracking-[0.18em] text-indigo-600 mb-3">Screening complete</p>
+        <h1 className="text-2xl font-extrabold mb-3">We couldn’t load the report yet</h1>
+        <p className="text-sm leading-relaxed text-[#73799A] mb-7">
+          {loadError
+            ? 'The report service did not return a report. Please return to the screening page and try again.'
+            : 'The report is not available right now. Please try again in a moment.'}
+        </p>
+        <Link to="/" className="inline-flex items-center justify-center rounded-xl bg-indigo-600 px-6 py-3 text-sm font-bold text-white hover:bg-indigo-700 transition-colors">
+          Return to screenings
         </Link>
       </div>
     </div>

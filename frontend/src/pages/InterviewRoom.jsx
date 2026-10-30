@@ -293,10 +293,10 @@ function InterviewRoomContent({ sessionData, sessionId }) {
     const utterance = new SpeechSynthesisUtterance(question);
     const isHindi       = questionLanguage === 'hindi' || /[\u0900-\u097F]/.test(question);
     const hindiVoice    = voices.find((v) => /^hi[-_]/i.test(v.lang));
-    const indianMale    = voices.find((v) => /en[-_]in/i.test(v.lang) && /ravi|rishi|prabhat|hemant|male/i.test(v.name));
-    const maleVoice     = voices.find((v) => /ravi|rishi|prabhat|hemant|david|mark|male/i.test(v.name));
+    const indianFemale  = voices.find((v) => /en[-_]in/i.test(v.lang) && /female|woman|zira|heera|priya|kavya|neerja/i.test(v.name));
+    const femaleVoice   = voices.find((v) => /female|woman|zira|heera|samantha|karen|susan|priya|kavya|neerja/i.test(v.name));
     const indianVoice   = voices.find((v) => /en[-_]in/i.test(v.lang));
-    const voice         = isHindi ? (hindiVoice || indianVoice) : (indianMale || maleVoice || indianVoice);
+    const voice         = isHindi ? (hindiVoice || indianFemale || femaleVoice || indianVoice) : (indianFemale || femaleVoice || indianVoice || voices[0]);
 
     if (voice) utterance.voice = voice;
     utterance.lang  = voice?.lang || (isHindi ? 'hi-IN' : 'en-IN');
@@ -529,10 +529,11 @@ function InterviewRoomContent({ sessionData, sessionId }) {
             </div>
 
             <button
-              onClick={() => navigate(`/report?session_id=${sessionId}`)}
-              className="text-[#A1A1AA] hover:text-[#EF4444] text-[11px] font-medium uppercase tracking-wider transition-colors mt-auto"
+              onClick={handleCompleteInterview}
+              disabled={interviewState === 'GENERATING_REPORT'}
+              className="text-[#A1A1AA] hover:text-[#4F46E5] disabled:opacity-50 text-[11px] font-medium uppercase tracking-wider transition-colors mt-auto"
             >
-              End screening early
+              Finish screening and view report
             </button>
           </div>
 
