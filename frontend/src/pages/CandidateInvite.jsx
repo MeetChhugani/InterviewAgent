@@ -1,0 +1,10 @@
+import React, { useEffect, useState } from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
+import { api } from '../api';
+
+export default function CandidateInvite() {
+  const { token } = useParams(); const navigate = useNavigate(); const [invite, setInvite] = useState(null); const [error, setError] = useState(''); const [joining, setJoining] = useState(false);
+  useEffect(() => { api.get(`/api/invitations/${token}`).then(r=>setInvite(r.data)).catch(e=>setError(e.response?.data?.detail || 'This invitation is unavailable.')); }, [token]);
+  const join = async () => { setJoining(true); setError(''); try { const r = await api.post(`/api/invitations/${token}/join`); navigate(`/room?session_id=${r.data.session_id}`); } catch(e) { setError(e.response?.data?.detail || 'Could not start the interview.'); setJoining(false); } };
+  return <main className="min-h-screen grid place-items-center bg-slate-950 text-white p-5"><section className="w-full max-w-lg rounded-3xl bg-slate-900 border border-slate-800 p-8 text-center"><p className="text-indigo-400 font-bold text-xs tracking-widest">INTERVIEWOS</p>{error ? <><h1 className="text-2xl font-bold mt-4">Interview unavailable</h1><p className="text-rose-400 mt-3">{error}</p></> : !invite ? <p className="mt-5 text-slate-400">Loading your interview invitation…</p> : <><h1 className="text-3xl font-bold mt-4">Hi, {invite.candidate_name}</h1><p className="text-slate-300 mt-4">You have a scheduled screening for <b>{invite.role}</b> in {invite.domain}.</p><p className="mt-3 text-sm text-slate-400">Scheduled: {new Date(invite.scheduled_at).toLocaleString()}</p><button disabled={joining || invite.status === 'completed'} onClick={join} className="mt-8 w-full rounded-xl bg-cyan-500 text-slate-950 p-4 font-extrabold disabled:opacity-50">{joining ? 'Starting interview…' : invite.status === 'completed' ? 'Interview completed' : 'Join interview'}</button><p className="text-xs text-slate-500 mt-4">Please allow microphone access when the interview room opens.</p></>}</section></main>;
+}

@@ -1,9 +1,15 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import List
 import uuid
 import os
+import json
+import secrets
+import sqlite3
+from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from livekit.api import AccessToken, VideoGrants
 from dotenv import load_dotenv
 import logging
@@ -11,6 +17,8 @@ import logging
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
 AGENT_NAME = os.getenv("LIVEKIT_AGENT_NAME", "interviewer").strip() or "interviewer"
+DATABASE_PATH = Path(os.getenv("DATABASE_PATH", "interviewos.db"))
+ADMIN_ACCESS_KEY = os.getenv("ADMIN_ACCESS_KEY", "").strip()
 
 app = FastAPI(title="Voice Interviewer API")
 
@@ -54,63 +62,132 @@ class InterviewSetup(BaseModel):
     num_questions: int = Field(ge=1, le=10)
 
 
+class ScheduledInterviewRequest(BaseModel):
+    candidate_name: str = Field(min_length=1, max_length=120)
+    candidate_email: str = Field(min_length=3, max_length=254)
+    scheduled_at: datetime
+    setup: InterviewSetup
+
+
+def now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def iso(value: datetime | None = None) -> str:
+    return (value or now_utc()).astimezone(timezone.utc).isoformat()
+
+
+@contextmanager
+def db_connection():
+    DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(DATABASE_PATH)
+    connection.row_factory = sqlite3.Row
+    try:
+        yield connection
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def initialise_database():
+    with db_connection() as db:
+        db.executescript("""
+            CREATE TABLE IF NOT EXISTS scheduled_interviews (
+                id TEXT PRIMARY KEY,
+                invite_token TEXT UNIQUE NOT NULL,
+                candidate_name TEXT NOT NULL,
+                candidate_email TEXT NOT NULL,
+                scheduled_at TEXT NOT NULL,
+                setup_json TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'scheduled',
+                session_id TEXT,
+                report_json TEXT,
+                created_at TEXT NOT NULL,
+                started_at TEXT,
+                completed_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS interview_sessions (
+                id TEXT PRIMARY KEY,
+                interview_id TEXT,
+                candidate_name TEXT,
+                setup_json TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'created',
+                report_json TEXT,
+                created_at TEXT NOT NULL,
+                completed_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_invite_token ON scheduled_interviews(invite_token);
+        """)
+
+
+@app.on_event("startup")
+def startup():
+    initialise_database()
+    if not ADMIN_ACCESS_KEY:
+        logging.getLogger("api").warning("ADMIN_ACCESS_KEY is not configured. Admin API routes are disabled.")
+
+
+def require_admin(x_admin_key: str | None):
+    if not ADMIN_ACCESS_KEY or not x_admin_key or not secrets.compare_digest(x_admin_key, ADMIN_ACCESS_KEY):
+        raise HTTPException(status_code=401, detail="A valid admin access key is required")
+
+
+def row_to_session(row: sqlite3.Row) -> dict:
+    return {
+        "id": row["id"], "candidate_name": row["candidate_name"] or "Candidate",
+        "setup": json.loads(row["setup_json"]), "status": row["status"],
+        "report": json.loads(row["report_json"]) if row["report_json"] else None,
+    }
+
+
+def create_session_record(setup: dict, candidate_name: str = "Candidate", interview_id: str | None = None) -> dict:
+    session_id = str(uuid.uuid4())
+    with db_connection() as db:
+        db.execute(
+            "INSERT INTO interview_sessions (id, interview_id, candidate_name, setup_json, created_at) VALUES (?, ?, ?, ?, ?)",
+            (session_id, interview_id, candidate_name, json.dumps(setup), iso()),
+        )
+        row = db.execute("SELECT * FROM interview_sessions WHERE id = ?", (session_id,)).fetchone()
+    return row_to_session(row)
+
+
+async def dispatch_interviewer(session_id: str, setup: dict):
+    from livekit import api
+    url, key, secret = os.getenv("LIVEKIT_URL"), os.getenv("LIVEKIT_API_KEY"), os.getenv("LIVEKIT_API_SECRET")
+    if not url or not key or not secret:
+        raise RuntimeError("LiveKit environment variables are not configured")
+    async with api.LiveKitAPI(url=url, api_key=key, api_secret=secret) as lkapi:
+        await lkapi.agent_dispatch.create_dispatch(
+            api.CreateAgentDispatchRequest(agent_name=AGENT_NAME, room=session_id, metadata=json.dumps(setup))
+        )
+
+
 sessions = {}
 
 
 @app.post("/api/interview/session")
 async def create_session(setup: InterviewSetup):
-    session_id = str(uuid.uuid4())
-    sessions[session_id] = {
-        "id": session_id,
-        "setup": setup.model_dump(),
-        "status": "created",
-        "questions_asked": 0,
-        "evaluations": [],
-        "report": None,
-    }
-
-    import json
-    from livekit import api
-    import logging
-    logger = logging.getLogger("api")
-
+    session = create_session_record(setup.model_dump())
     try:
-        url = os.getenv("LIVEKIT_URL")
-        key = os.getenv("LIVEKIT_API_KEY")
-        secret = os.getenv("LIVEKIT_API_SECRET")
-        logger.info(f"Connecting to LiveKit API at {url}")
-
-        async with api.LiveKitAPI(url=url, api_key=key, api_secret=secret) as lkapi:
-            dispatch = await lkapi.agent_dispatch.create_dispatch(
-                api.CreateAgentDispatchRequest(
-                    agent_name=AGENT_NAME,
-                    room=session_id,
-                    metadata=json.dumps(setup.model_dump()),
-                )
-            )
-            logger.info(
-                "DISPATCHING INTERVIEWER: agent_name=%s room=%s",
-                AGENT_NAME,
-                session_id,
-            )
-            logger.info(f"dispatch_id={dispatch.id}")
-    except Exception as e:
-        logger.error(f"Failed to dispatch agent: {e}", exc_info=True)
-
-    return sessions[session_id]
+        await dispatch_interviewer(session["id"], session["setup"])
+    except Exception:
+        logging.getLogger("api").exception("Failed to dispatch interviewer")
+        raise HTTPException(status_code=503, detail="Interview service is unavailable")
+    return session
 
 
 @app.get("/api/interview/session/{session_id}")
 async def get_session(session_id: str):
-    if session_id not in sessions:
+    with db_connection() as db:
+        row = db.execute("SELECT * FROM interview_sessions WHERE id = ?", (session_id,)).fetchone()
+    if not row:
         raise HTTPException(status_code=404, detail="Session not found")
-    return sessions[session_id]
+    return row_to_session(row)
 
 
 @app.get("/api/interview/session/{session_id}/token")
-async def get_token(session_id: str, participant_name: str = "Candidate"):
-    if session_id not in sessions:
-        raise HTTPException(status_code=404, detail="Session not found")
+async def get_token(session_id: str, participant_name: str | None = None):
+    session = await get_session(session_id)
 
     api_key = os.getenv("LIVEKIT_API_KEY")
     api_secret = os.getenv("LIVEKIT_API_SECRET")
@@ -126,7 +203,7 @@ async def get_token(session_id: str, participant_name: str = "Candidate"):
         AccessToken(api_key, api_secret)
         .with_grants(grant)
         .with_identity(str(uuid.uuid4()))
-        .with_name(participant_name)
+        .with_name(participant_name or session["candidate_name"])
     )
 
     token = access_token.to_jwt()
@@ -135,8 +212,73 @@ async def get_token(session_id: str, participant_name: str = "Candidate"):
 
 @app.post("/api/interview/session/{session_id}/complete")
 async def complete_session(session_id: str, report: dict):
-    if session_id not in sessions:
-        raise HTTPException(status_code=404, detail="Session not found")
-    sessions[session_id]["status"] = "completed"
-    sessions[session_id]["report"] = report
-    return sessions[session_id]
+    with db_connection() as db:
+        row = db.execute("SELECT * FROM interview_sessions WHERE id = ?", (session_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Session not found")
+        completed_at = iso()
+        db.execute("UPDATE interview_sessions SET status = 'completed', report_json = ?, completed_at = ? WHERE id = ?", (json.dumps(report), completed_at, session_id))
+        if row["interview_id"]:
+            db.execute("UPDATE scheduled_interviews SET status = 'completed', report_json = ?, completed_at = ? WHERE id = ?", (json.dumps(report), completed_at, row["interview_id"]))
+        saved = db.execute("SELECT * FROM interview_sessions WHERE id = ?", (session_id,)).fetchone()
+    return row_to_session(saved)
+
+
+@app.post("/api/admin/interviews")
+async def schedule_interview(request: ScheduledInterviewRequest, x_admin_key: str | None = Header(default=None)):
+    require_admin(x_admin_key)
+    if request.scheduled_at.tzinfo is None:
+        raise HTTPException(status_code=422, detail="scheduled_at must include a timezone")
+    interview_id, token = str(uuid.uuid4()), secrets.token_urlsafe(24)
+    with db_connection() as db:
+        db.execute(
+            "INSERT INTO scheduled_interviews (id, invite_token, candidate_name, candidate_email, scheduled_at, setup_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (interview_id, token, request.candidate_name.strip(), request.candidate_email.strip().lower(), iso(request.scheduled_at), json.dumps(request.setup.model_dump()), iso()),
+        )
+    return {"id": interview_id, "invite_token": token, "scheduled_at": iso(request.scheduled_at), "status": "scheduled"}
+
+
+@app.get("/api/admin/interviews")
+async def list_scheduled_interviews(x_admin_key: str | None = Header(default=None)):
+    require_admin(x_admin_key)
+    with db_connection() as db:
+        rows = db.execute("SELECT * FROM scheduled_interviews ORDER BY scheduled_at DESC").fetchall()
+    return [{
+        "id": row["id"], "candidate_name": row["candidate_name"], "candidate_email": row["candidate_email"], "scheduled_at": row["scheduled_at"], "status": row["status"], "session_id": row["session_id"],
+        "report": json.loads(row["report_json"]) if row["report_json"] else None, "setup": json.loads(row["setup_json"]),
+    } for row in rows]
+
+
+@app.get("/api/invitations/{invite_token}")
+async def get_invitation(invite_token: str):
+    with db_connection() as db:
+        row = db.execute("SELECT * FROM scheduled_interviews WHERE invite_token = ?", (invite_token,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Interview invitation not found")
+    setup = json.loads(row["setup_json"])
+    return {"candidate_name": row["candidate_name"], "scheduled_at": row["scheduled_at"], "status": row["status"], "session_id": row["session_id"], "role": setup["role"], "domain": setup["domain"]}
+
+
+@app.post("/api/invitations/{invite_token}/join")
+async def join_invitation(invite_token: str):
+    with db_connection() as db:
+        row = db.execute("SELECT * FROM scheduled_interviews WHERE invite_token = ?", (invite_token,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Interview invitation not found")
+    if row["status"] == "completed":
+        raise HTTPException(status_code=409, detail="This interview has already been completed")
+    scheduled_at = datetime.fromisoformat(row["scheduled_at"])
+    if now_utc() < scheduled_at - timedelta(minutes=10):
+        raise HTTPException(status_code=403, detail="This interview opens 10 minutes before its scheduled time")
+    if row["session_id"]:
+        return {"session_id": row["session_id"]}
+    setup = json.loads(row["setup_json"])
+    session = create_session_record(setup, row["candidate_name"], row["id"])
+    try:
+        await dispatch_interviewer(session["id"], setup)
+    except Exception:
+        logging.getLogger("api").exception("Failed to dispatch scheduled interviewer")
+        raise HTTPException(status_code=503, detail="Interview service is unavailable")
+    with db_connection() as db:
+        db.execute("UPDATE scheduled_interviews SET session_id = ?, status = 'in_progress', started_at = ? WHERE id = ?", (session["id"], iso(), row["id"]))
+    return {"session_id": session["id"]}

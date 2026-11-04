@@ -202,6 +202,21 @@ Quick Tunnel links are temporary and change when the tunnel closes. This is suit
 
 ## Validation commands
 
+## Admin dashboard and scheduled candidate links
+
+The recruiter dashboard is available at `/admin`. Set `ADMIN_ACCESS_KEY` in
+the API service environment before using it. The dashboard lets a recruiter
+schedule an interview, create a one-time candidate URL, and view the completed
+report for every scheduled candidate.
+
+Candidate URLs open ten minutes before the scheduled time. A candidate can
+reuse their link while the interview is in progress, but cannot start a second
+interview after their report is complete.
+
+For Railway, add a persistent Volume to the **API service** and set
+`DATABASE_PATH=/data/interviewos.db`. Without a volume, SQLite data is removed
+when Railway replaces the API container.
+
 Run these before sharing changes:
 
 ```powershell
