@@ -7,6 +7,7 @@ import os
 import json
 import secrets
 import sqlite3
+import hashlib
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -65,8 +66,13 @@ class InterviewSetup(BaseModel):
 class ScheduledInterviewRequest(BaseModel):
     candidate_name: str = Field(min_length=1, max_length=120)
     candidate_email: str = Field(min_length=3, max_length=254)
+    interview_password: str = Field(min_length=8, max_length=128)
     scheduled_at: datetime
     setup: InterviewSetup
+
+
+class InviteJoinRequest(BaseModel):
+    password: str = Field(min_length=1, max_length=128)
 
 
 def now_utc() -> datetime:
@@ -97,6 +103,7 @@ def initialise_database():
                 invite_token TEXT UNIQUE NOT NULL,
                 candidate_name TEXT NOT NULL,
                 candidate_email TEXT NOT NULL,
+                password_hash TEXT,
                 scheduled_at TEXT NOT NULL,
                 setup_json TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'scheduled',
@@ -118,6 +125,11 @@ def initialise_database():
             );
             CREATE INDEX IF NOT EXISTS idx_invite_token ON scheduled_interviews(invite_token);
         """)
+        # Existing installations already have the table. Add the lock column
+        # once, without invalidating their old interview records.
+        columns = {row["name"] for row in db.execute("PRAGMA table_info(scheduled_interviews)")}
+        if "password_hash" not in columns:
+            db.execute("ALTER TABLE scheduled_interviews ADD COLUMN password_hash TEXT")
 
 
 @app.on_event("startup")
@@ -130,6 +142,20 @@ def startup():
 def require_admin(x_admin_key: str | None):
     if not ADMIN_ACCESS_KEY or not x_admin_key or not secrets.compare_digest(x_admin_key, ADMIN_ACCESS_KEY):
         raise HTTPException(status_code=401, detail="A valid admin access key is required")
+
+
+def password_digest(password: str, salt: str | None = None) -> str:
+    """Store a salted PBKDF2 digest, never the candidate's raw password."""
+    salt = salt or secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 200_000).hex()
+    return f"{salt}${digest}"
+
+
+def verify_password(password: str, stored_digest: str | None) -> bool:
+    if not stored_digest or "$" not in stored_digest:
+        return False
+    salt, _ = stored_digest.split("$", 1)
+    return secrets.compare_digest(password_digest(password, salt), stored_digest)
 
 
 def row_to_session(row: sqlite3.Row) -> dict:
@@ -232,8 +258,8 @@ async def schedule_interview(request: ScheduledInterviewRequest, x_admin_key: st
     interview_id, token = str(uuid.uuid4()), secrets.token_urlsafe(24)
     with db_connection() as db:
         db.execute(
-            "INSERT INTO scheduled_interviews (id, invite_token, candidate_name, candidate_email, scheduled_at, setup_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (interview_id, token, request.candidate_name.strip(), request.candidate_email.strip().lower(), iso(request.scheduled_at), json.dumps(request.setup.model_dump()), iso()),
+            "INSERT INTO scheduled_interviews (id, invite_token, candidate_name, candidate_email, password_hash, scheduled_at, setup_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (interview_id, token, request.candidate_name.strip(), request.candidate_email.strip().lower(), password_digest(request.interview_password), iso(request.scheduled_at), json.dumps(request.setup.model_dump()), iso()),
         )
     return {"id": interview_id, "invite_token": token, "scheduled_at": iso(request.scheduled_at), "status": "scheduled"}
 
@@ -260,13 +286,15 @@ async def get_invitation(invite_token: str):
 
 
 @app.post("/api/invitations/{invite_token}/join")
-async def join_invitation(invite_token: str):
+async def join_invitation(invite_token: str, request: InviteJoinRequest):
     with db_connection() as db:
         row = db.execute("SELECT * FROM scheduled_interviews WHERE invite_token = ?", (invite_token,)).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Interview invitation not found")
     if row["status"] == "completed":
         raise HTTPException(status_code=409, detail="This interview has already been completed")
+    if not verify_password(request.password, row["password_hash"]):
+        raise HTTPException(status_code=401, detail="Incorrect interview password")
     scheduled_at = datetime.fromisoformat(row["scheduled_at"])
     if now_utc() < scheduled_at - timedelta(minutes=10):
         raise HTTPException(status_code=403, detail="This interview opens 10 minutes before its scheduled time")
