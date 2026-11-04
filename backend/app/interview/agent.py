@@ -55,6 +55,63 @@ def safe_score(value) -> int:
         return 0
 
 
+def derive_report_scores(interview_results: list[dict]) -> dict:
+    """Derive report scorecards from the recorded answer evaluations.
+
+    A final-report LLM is useful for written feedback, but it must not be the
+    authority for a candidate's numeric result.  Keeping these calculations
+    local makes the scorecards repeatable and prevents a narrative model from
+    contradicting the answer-by-answer evaluations.
+    """
+    evaluated_results = [
+        result
+        for result in interview_results
+        if result.get(
+            "is_substantive_answer",
+            is_substantive_answer(result.get("answer", "")),
+        )
+    ]
+    if not evaluated_results:
+        return {
+            "overall_score": 0,
+            "technical_score": 0,
+            "communication_score": 0,
+            "lowest_answer_score": 0,
+        }
+
+    answer_scores = [safe_score(result.get("score")) for result in evaluated_results]
+    role_scores = [
+        safe_score((result.get("evaluation") or {}).get("technical_depth", 0) * 10)
+        for result in evaluated_results
+    ]
+    communication_scores = [
+        safe_score((result.get("evaluation") or {}).get("communication_score", 0))
+        for result in evaluated_results
+    ]
+    return {
+        "overall_score": round(sum(answer_scores) / len(answer_scores)),
+        "technical_score": round(sum(role_scores) / len(role_scores)),
+        "communication_score": round(sum(communication_scores) / len(communication_scores)),
+        "lowest_answer_score": min(answer_scores),
+    }
+
+
+def recommendation_for_scores(scores: dict) -> str:
+    """Apply the published, consistent qualification policy to a report."""
+    overall = scores["overall_score"]
+    technical = scores["technical_score"]
+    communication = scores["communication_score"]
+    lowest_answer = scores["lowest_answer_score"]
+
+    if overall >= 85 and technical >= 85 and communication >= 75 and lowest_answer >= 70:
+        return "STRONG HIRE"
+    if overall >= 70 and technical >= 70 and communication >= 60 and lowest_answer >= 40:
+        return "HIRE"
+    if overall >= 50:
+        return "CONSIDER"
+    return "NO HIRE"
+
+
 def is_substantive_answer(answer: str) -> bool:
     """Only a genuinely empty STT result is unusable for evaluation.
 
@@ -74,6 +131,7 @@ def missing_answer_evaluation() -> dict:
         "relevance": 0,
         "completeness": 0,
         "technical_depth": 0,
+        "communication_score": 0,
         "feedback": "No substantive answer was provided for this question.",
         "strengths": [],
         "weaknesses": ["Provide a complete, topic-relevant answer instead of skipping the question."],
@@ -750,6 +808,7 @@ Provide a JSON response with the following fields:
 - relevance (0-10)
 - completeness (0-10)
 - technical_depth (0-10; interpret as role-specific competency and depth, including nontechnical skills)
+- communication_score (0-100; score clarity, structure, specificity, and professional communication in the answer, not accent or grammar alone)
 - feedback (constructive feedback for the candidate)
 - strengths (list of strings)
 - weaknesses (list of strings)
@@ -764,6 +823,7 @@ Provide a JSON response with the following fields:
                 "relevance": 0,
                 "completeness": 0,
                 "technical_depth": 0,
+                "communication_score": 0,
                 "feedback": "Unable to evaluate answer due to parsing error.",
                 "strengths": [],
                 "weaknesses": [],
@@ -832,6 +892,7 @@ Provide a JSON response with the following fields:
                 "is_substantive_answer": substantive_answer,
                 "evaluation":            eval_data,
                 "score":                 eval_data.get("score", 0),
+                "communication_score":   eval_data.get("communication_score", 0),
                 "correctness":           eval_data.get("correctness", ""),
                 "feedback":              eval_data.get("feedback", ""),
                 "strengths":             eval_data.get("strengths", []),
@@ -887,13 +948,7 @@ Provide a JSON response with the following fields:
             json.dumps(interview_results, indent=2),
         )
 
-        scores = [
-            safe_score(result.get("score"))
-            if result.get("is_substantive_answer", is_substantive_answer(result.get("answer", "")))
-            else 0
-            for result in interview_results
-        ]
-        overall = round(sum(scores) / len(scores)) if scores else 0
+        derived_scores = derive_report_scores(interview_results)
         has_substantive_answer = any(
             result.get("is_substantive_answer", is_substantive_answer(result.get("answer", "")))
             for result in interview_results
@@ -910,13 +965,12 @@ Evaluations:
 {json.dumps(interview_results, indent=2)}
 
 Provide a JSON response matching this schema exactly:
-- overall_score (0-100)
-- technical_score (0-100; use this field for role-specific competency, whether technical or nontechnical)
-- communication_score (0-100)
 - strengths (list of strings)
 - weaknesses (list of strings)
 - final_feedback (string summarizing performance)
-- recommendation (string, e.g. "STRONG HIRE", "HIRE", "NO HIRE")
+
+Do not provide numeric scores or a hiring recommendation. Those are calculated
+deterministically from the recorded answer evaluations.
 """
             # Per-question evaluation already exists. Keep the optional
             # narrative synthesis bounded so a slow model cannot leave the
@@ -927,13 +981,13 @@ Provide a JSON response matching this schema exactly:
             )
 
             report = {
-                "overall_score":       report_data.get("overall_score", overall),
-                "technical_score":     report_data.get("technical_score", overall),
-                "communication_score": report_data.get("communication_score", overall),
+                "overall_score":       derived_scores["overall_score"],
+                "technical_score":     derived_scores["technical_score"],
+                "communication_score": derived_scores["communication_score"],
                 "strengths":           report_data.get("strengths", []),
                 "weaknesses":          report_data.get("weaknesses", []),
                 "final_feedback":      report_data.get("final_feedback", "Overall solid performance."),
-                "recommendation":      report_data.get("recommendation", "CONSIDER"),
+                "recommendation":      recommendation_for_scores(derived_scores),
                 "question_results":    interview_results,
             }
         except Exception:
@@ -949,20 +1003,14 @@ Provide a JSON response matching this schema exactly:
                 strengths = ["Completed the interview"]
             if not weaknesses:
                 weaknesses = ["Review the topics covered in the interview"]
-            recommendation = (
-                "STRONG HIRE" if overall >= 85
-                else "HIRE" if overall >= 70
-                else "CONSIDER" if overall >= 50
-                else "NO HIRE"
-            )
             report = {
-                "overall_score":       overall,
-                "technical_score":     overall,
-                "communication_score": overall,
+                "overall_score":       derived_scores["overall_score"],
+                "technical_score":     derived_scores["technical_score"],
+                "communication_score": derived_scores["communication_score"],
                 "strengths":           strengths,
                 "weaknesses":          weaknesses,
                 "final_feedback":      "The automated narrative report was unavailable, so this summary is based on the per-question evaluations.",
-                "recommendation":      recommendation,
+                "recommendation":      recommendation_for_scores(derived_scores),
                 "question_results":    interview_results,
             }
 

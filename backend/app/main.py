@@ -8,6 +8,7 @@ import json
 import secrets
 import sqlite3
 import hashlib
+import httpx
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -22,6 +23,9 @@ DATABASE_PATH = Path(os.getenv("DATABASE_PATH", "interviewos.db"))
 ADMIN_ACCESS_KEY = os.getenv("ADMIN_ACCESS_KEY", "").strip()
 HR_LOGIN_EMAIL = os.getenv("HR_LOGIN_EMAIL", "hr@interviewos.com").strip().lower()
 HR_LOGIN_PASSWORD = os.getenv("HR_LOGIN_PASSWORD", "").strip()
+SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
+SUPABASE_SECRET_KEY = os.getenv("SUPABASE_SECRET_KEY", "").strip()
+USE_SUPABASE = bool(SUPABASE_URL and SUPABASE_SECRET_KEY)
 
 app = FastAPI(title="Voice Interviewer API")
 
@@ -103,6 +107,9 @@ def db_connection():
 
 
 def initialise_database():
+    if USE_SUPABASE:
+        logging.getLogger("api").info("Using Supabase for persistent interview storage")
+        return
     with db_connection() as db:
         db.executescript("""
             CREATE TABLE IF NOT EXISTS scheduled_interviews (
@@ -152,6 +159,38 @@ def startup():
     initialise_database()
     if not ADMIN_ACCESS_KEY:
         logging.getLogger("api").warning("ADMIN_ACCESS_KEY is not configured. Admin API routes are disabled.")
+    if not USE_SUPABASE:
+        logging.getLogger("api").warning("Supabase is not configured; using local SQLite fallback. Data will not survive a Railway container replacement.")
+
+
+def sb_request(method: str, table: str, *, params: dict | None = None, payload: dict | None = None) -> list[dict]:
+    """Small server-only wrapper around Supabase's PostgREST API."""
+    if not USE_SUPABASE:
+        raise RuntimeError("Supabase storage is not configured")
+    headers = {
+        "apikey": SUPABASE_SECRET_KEY,
+        "Authorization": f"Bearer {SUPABASE_SECRET_KEY}",
+        "Content-Type": "application/json",
+        "Prefer": "return=representation",
+    }
+    response = httpx.request(method, f"{SUPABASE_URL}/rest/v1/{table}", params=params, json=payload, headers=headers, timeout=15.0)
+    response.raise_for_status()
+    return response.json() if response.content else []
+
+
+def sb_one(table: str, **filters) -> dict | None:
+    params = {key: f"eq.{value}" for key, value in filters.items()}
+    rows = sb_request("GET", table, params=params)
+    return rows[0] if rows else None
+
+
+def database_row_to_session(row: dict) -> dict:
+    return {
+        "id": row["id"], "candidate_name": row.get("candidate_name") or "Candidate",
+        "setup": row["setup_json"] if isinstance(row["setup_json"], dict) else json.loads(row["setup_json"]),
+        "status": row["status"],
+        "report": row.get("report_json") if isinstance(row.get("report_json"), dict) else (json.loads(row["report_json"]) if row.get("report_json") else None),
+    }
 
 
 def require_admin(x_admin_key: str | None, x_admin_session: str | None):
@@ -159,11 +198,18 @@ def require_admin(x_admin_key: str | None, x_admin_session: str | None):
     if ADMIN_ACCESS_KEY and x_admin_key and secrets.compare_digest(x_admin_key, ADMIN_ACCESS_KEY):
         return
     if x_admin_session:
-        with db_connection() as db:
-            row = db.execute("SELECT expires_at FROM admin_sessions WHERE token = ?", (x_admin_session,)).fetchone()
+        if USE_SUPABASE:
+            row = sb_one("admin_sessions", token=x_admin_session)
             if row and datetime.fromisoformat(row["expires_at"]) > now_utc():
                 return
-            db.execute("DELETE FROM admin_sessions WHERE token = ?", (x_admin_session,))
+            if row:
+                sb_request("DELETE", "admin_sessions", params={"token": f"eq.{x_admin_session}"})
+        else:
+            with db_connection() as db:
+                row = db.execute("SELECT expires_at FROM admin_sessions WHERE token = ?", (x_admin_session,)).fetchone()
+                if row and datetime.fromisoformat(row["expires_at"]) > now_utc():
+                    return
+                db.execute("DELETE FROM admin_sessions WHERE token = ?", (x_admin_session,))
     if not ADMIN_ACCESS_KEY:
         raise HTTPException(status_code=503, detail="Admin access is not configured")
     raise HTTPException(status_code=401, detail="Please sign in as HR to continue")
@@ -179,9 +225,13 @@ async def admin_login(request: AdminLoginRequest):
         raise HTTPException(status_code=401, detail="Incorrect HR email or password")
     token = secrets.token_urlsafe(32)
     expires_at = now_utc() + timedelta(hours=12)
-    with db_connection() as db:
-        db.execute("DELETE FROM admin_sessions WHERE expires_at <= ?", (iso(),))
-        db.execute("INSERT INTO admin_sessions (token, expires_at, created_at) VALUES (?, ?, ?)", (token, iso(expires_at), iso()))
+    if USE_SUPABASE:
+        sb_request("DELETE", "admin_sessions", params={"expires_at": f"lte.{iso()}"})
+        sb_request("POST", "admin_sessions", payload={"token": token, "expires_at": iso(expires_at), "created_at": iso()})
+    else:
+        with db_connection() as db:
+            db.execute("DELETE FROM admin_sessions WHERE expires_at <= ?", (iso(),))
+            db.execute("INSERT INTO admin_sessions (token, expires_at, created_at) VALUES (?, ?, ?)", (token, iso(expires_at), iso()))
     return {"session_token": token, "expires_at": iso(expires_at)}
 
 
@@ -209,6 +259,9 @@ def row_to_session(row: sqlite3.Row) -> dict:
 
 def create_session_record(setup: dict, candidate_name: str = "Candidate", interview_id: str | None = None) -> dict:
     session_id = str(uuid.uuid4())
+    if USE_SUPABASE:
+        rows = sb_request("POST", "interview_sessions", payload={"id": session_id, "interview_id": interview_id, "candidate_name": candidate_name, "setup_json": setup, "created_at": iso()})
+        return database_row_to_session(rows[0])
     with db_connection() as db:
         db.execute(
             "INSERT INTO interview_sessions (id, interview_id, candidate_name, setup_json, created_at) VALUES (?, ?, ?, ?, ?)",
@@ -248,6 +301,11 @@ async def create_session(setup: InterviewSetup, x_admin_key: str | None = Header
 
 @app.get("/api/interview/session/{session_id}")
 async def get_session(session_id: str):
+    if USE_SUPABASE:
+        row = sb_one("interview_sessions", id=session_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="Session not found")
+        return database_row_to_session(row)
     with db_connection() as db:
         row = db.execute("SELECT * FROM interview_sessions WHERE id = ?", (session_id,)).fetchone()
     if not row:
@@ -282,6 +340,15 @@ async def get_token(session_id: str, participant_name: str | None = None):
 
 @app.post("/api/interview/session/{session_id}/complete")
 async def complete_session(session_id: str, report: dict):
+    if USE_SUPABASE:
+        row = sb_one("interview_sessions", id=session_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="Session not found")
+        completed_at = iso()
+        sb_request("PATCH", "interview_sessions", params={"id": f"eq.{session_id}"}, payload={"status": "completed", "report_json": report, "completed_at": completed_at})
+        if row.get("interview_id"):
+            sb_request("PATCH", "scheduled_interviews", params={"id": f"eq.{row['interview_id']}"}, payload={"status": "completed", "report_json": report, "report_share_token": secrets.token_urlsafe(24), "completed_at": completed_at})
+        return database_row_to_session(sb_one("interview_sessions", id=session_id))
     with db_connection() as db:
         row = db.execute("SELECT * FROM interview_sessions WHERE id = ?", (session_id,)).fetchone()
         if not row:
@@ -304,6 +371,9 @@ async def schedule_interview(request: ScheduledInterviewRequest, x_admin_key: st
     if request.scheduled_at.tzinfo is None:
         raise HTTPException(status_code=422, detail="scheduled_at must include a timezone")
     interview_id, token = str(uuid.uuid4()), secrets.token_urlsafe(24)
+    if USE_SUPABASE:
+        sb_request("POST", "scheduled_interviews", payload={"id": interview_id, "invite_token": token, "candidate_name": request.candidate_name.strip(), "candidate_email": request.candidate_email.strip().lower(), "password_hash": password_digest(request.interview_password), "scheduled_at": iso(request.scheduled_at), "setup_json": request.setup.model_dump(), "created_at": iso()})
+        return {"id": interview_id, "invite_token": token, "scheduled_at": iso(request.scheduled_at), "status": "scheduled"}
     with db_connection() as db:
         db.execute(
             "INSERT INTO scheduled_interviews (id, invite_token, candidate_name, candidate_email, password_hash, scheduled_at, setup_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -315,6 +385,9 @@ async def schedule_interview(request: ScheduledInterviewRequest, x_admin_key: st
 @app.get("/api/admin/interviews")
 async def list_scheduled_interviews(x_admin_key: str | None = Header(default=None), x_admin_session: str | None = Header(default=None)):
     require_admin(x_admin_key, x_admin_session)
+    if USE_SUPABASE:
+        rows = sb_request("GET", "scheduled_interviews", params={"select": "*", "order": "scheduled_at.desc"})
+        return [{"id": row["id"], "candidate_name": row["candidate_name"], "candidate_email": row["candidate_email"], "scheduled_at": row["scheduled_at"], "status": row["status"], "session_id": row.get("session_id"), "report": row.get("report_json"), "report_share_token": row.get("report_share_token"), "setup": row["setup_json"]} for row in rows]
     with db_connection() as db:
         rows = db.execute("SELECT * FROM scheduled_interviews ORDER BY scheduled_at DESC").fetchall()
     return [{
@@ -325,6 +398,12 @@ async def list_scheduled_interviews(x_admin_key: str | None = Header(default=Non
 
 @app.get("/api/invitations/{invite_token}")
 async def get_invitation(invite_token: str):
+    if USE_SUPABASE:
+        row = sb_one("scheduled_interviews", invite_token=invite_token)
+        if not row:
+            raise HTTPException(status_code=404, detail="Interview invitation not found")
+        setup = row["setup_json"]
+        return {"candidate_name": row["candidate_name"], "scheduled_at": row["scheduled_at"], "status": row["status"], "session_id": row.get("session_id"), "role": setup["role"], "domain": setup["domain"]}
     with db_connection() as db:
         row = db.execute("SELECT * FROM scheduled_interviews WHERE invite_token = ?", (invite_token,)).fetchone()
     if not row:
@@ -335,6 +414,26 @@ async def get_invitation(invite_token: str):
 
 @app.post("/api/invitations/{invite_token}/join")
 async def join_invitation(invite_token: str, request: InviteJoinRequest):
+    if USE_SUPABASE:
+        row = sb_one("scheduled_interviews", invite_token=invite_token)
+        if not row:
+            raise HTTPException(status_code=404, detail="Interview invitation not found")
+        if row["status"] == "completed":
+            raise HTTPException(status_code=409, detail="This interview has already been completed")
+        if not verify_password(request.password, row.get("password_hash")):
+            raise HTTPException(status_code=401, detail="Incorrect interview password")
+        if now_utc() < datetime.fromisoformat(row["scheduled_at"]) - timedelta(minutes=10):
+            raise HTTPException(status_code=403, detail="This interview opens 10 minutes before its scheduled time")
+        if row.get("session_id"):
+            return {"session_id": row["session_id"]}
+        session = create_session_record(row["setup_json"], row["candidate_name"], row["id"])
+        try:
+            await dispatch_interviewer(session["id"], row["setup_json"])
+        except Exception:
+            logging.getLogger("api").exception("Failed to dispatch scheduled interviewer")
+            raise HTTPException(status_code=503, detail="Interview service is unavailable")
+        sb_request("PATCH", "scheduled_interviews", params={"id": f"eq.{row['id']}"}, payload={"session_id": session["id"], "status": "in_progress", "started_at": iso()})
+        return {"session_id": session["id"]}
     with db_connection() as db:
         row = db.execute("SELECT * FROM scheduled_interviews WHERE invite_token = ?", (invite_token,)).fetchone()
     if not row:
@@ -364,6 +463,16 @@ async def join_invitation(invite_token: str, request: InviteJoinRequest):
 async def create_report_share_link(interview_id: str, x_admin_key: str | None = Header(default=None), x_admin_session: str | None = Header(default=None)):
     """Create/retrieve a secret, read-only link for a completed assessment."""
     require_admin(x_admin_key, x_admin_session)
+    if USE_SUPABASE:
+        row = sb_one("scheduled_interviews", id=interview_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="Scheduled interview not found")
+        if not row.get("report_json"):
+            raise HTTPException(status_code=409, detail="A share link is available after the interview report is complete")
+        token = row.get("report_share_token") or secrets.token_urlsafe(24)
+        if not row.get("report_share_token"):
+            sb_request("PATCH", "scheduled_interviews", params={"id": f"eq.{interview_id}"}, payload={"report_share_token": token})
+        return {"share_token": token}
     with db_connection() as db:
         row = db.execute("SELECT report_json, report_share_token FROM scheduled_interviews WHERE id = ?", (interview_id,)).fetchone()
         if not row:
@@ -378,6 +487,11 @@ async def create_report_share_link(interview_id: str, x_admin_key: str | None = 
 
 @app.get("/api/shared-reports/{share_token}")
 async def get_shared_report(share_token: str):
+    if USE_SUPABASE:
+        row = sb_one("scheduled_interviews", report_share_token=share_token)
+        if not row or not row.get("report_json"):
+            raise HTTPException(status_code=404, detail="Shared report not found")
+        return {"candidate_name": row["candidate_name"], "candidate_email": row["candidate_email"], "scheduled_at": row["scheduled_at"], "setup": row["setup_json"], "report": row["report_json"]}
     with db_connection() as db:
         row = db.execute(
             "SELECT candidate_name, candidate_email, scheduled_at, setup_json, report_json FROM scheduled_interviews WHERE report_share_token = ?",
