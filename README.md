@@ -218,6 +218,16 @@ For Railway, add a persistent Volume to the **API service** and set
 `DATABASE_PATH=/data/interviewos.db`. Without a volume, SQLite data is removed
 when Railway replaces the API container.
 
+### Supabase database (recommended for production)
+
+Create a Supabase project, then run [schema.sql](backend/supabase/schema.sql)
+in **SQL Editor**. Add `SUPABASE_URL` and `SUPABASE_SECRET_KEY` only to the
+Railway **InterviewAgent** API service. Do not put the secret key in Vercel or
+the frontend. The secret key is a server credential that bypasses Row Level
+Security; it must remain on a server you control. Once these values are set,
+the API storage layer can be switched from the local SQLite fallback to
+Supabase.
+
 Set `HR_LOGIN_EMAIL` and `HR_LOGIN_PASSWORD` on the API service as well. HR
 staff sign in at `/hr-login`; the dashboard issues a 12-hour server-side
 session and does not expose `ADMIN_ACCESS_KEY` to the browser.
