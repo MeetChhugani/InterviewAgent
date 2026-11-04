@@ -1,0 +1,5 @@
+import React from 'react';
+
+export default function PrivateAccess() {
+  return <div className="app-shell min-h-screen"><header className="app-header"><div className="brand"><span className="brand-mark">✦</span>InterviewOS</div><div className="status-chip"><span className="status-dot"/> Secure screening</div></header><main className="setup-main"><section className="setup-hero"><div className="eyebrow">Private interview platform</div><h1>Interview access is invitation-only.</h1><p>If you have an interview scheduled, use the unique secure link sent by your recruiter and enter your interview password when prompted.</p></section><section className="surface config-card max-w-xl mx-auto text-center"><h2 className="card-title">Have an invitation?</h2><p className="card-subtitle">Open the exact candidate link shared by your HR or hiring team. New interviews can only be created from the protected recruiter dashboard.</p><div className="mt-6 rounded-xl bg-indigo-50 text-indigo-700 p-4 text-sm font-semibold">For help with your interview link or password, contact your recruiter.</div></section></main></div>;
+}

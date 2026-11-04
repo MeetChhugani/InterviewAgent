@@ -109,6 +109,7 @@ def initialise_database():
                 status TEXT NOT NULL DEFAULT 'scheduled',
                 session_id TEXT,
                 report_json TEXT,
+                report_share_token TEXT UNIQUE,
                 created_at TEXT NOT NULL,
                 started_at TEXT,
                 completed_at TEXT
@@ -130,6 +131,8 @@ def initialise_database():
         columns = {row["name"] for row in db.execute("PRAGMA table_info(scheduled_interviews)")}
         if "password_hash" not in columns:
             db.execute("ALTER TABLE scheduled_interviews ADD COLUMN password_hash TEXT")
+        if "report_share_token" not in columns:
+            db.execute("ALTER TABLE scheduled_interviews ADD COLUMN report_share_token TEXT")
 
 
 @app.on_event("startup")
@@ -192,7 +195,10 @@ sessions = {}
 
 
 @app.post("/api/interview/session")
-async def create_session(setup: InterviewSetup):
+async def create_session(setup: InterviewSetup, x_admin_key: str | None = Header(default=None)):
+    # Direct session creation is reserved for HR/admins. Candidates must use
+    # their locked invitation endpoint, which also validates schedule/password.
+    require_admin(x_admin_key)
     session = create_session_record(setup.model_dump())
     try:
         await dispatch_interviewer(session["id"], session["setup"])
@@ -245,7 +251,11 @@ async def complete_session(session_id: str, report: dict):
         completed_at = iso()
         db.execute("UPDATE interview_sessions SET status = 'completed', report_json = ?, completed_at = ? WHERE id = ?", (json.dumps(report), completed_at, session_id))
         if row["interview_id"]:
-            db.execute("UPDATE scheduled_interviews SET status = 'completed', report_json = ?, completed_at = ? WHERE id = ?", (json.dumps(report), completed_at, row["interview_id"]))
+            share_token = secrets.token_urlsafe(24)
+            db.execute(
+                "UPDATE scheduled_interviews SET status = 'completed', report_json = ?, report_share_token = ?, completed_at = ? WHERE id = ?",
+                (json.dumps(report), share_token, completed_at, row["interview_id"]),
+            )
         saved = db.execute("SELECT * FROM interview_sessions WHERE id = ?", (session_id,)).fetchone()
     return row_to_session(saved)
 
@@ -271,7 +281,7 @@ async def list_scheduled_interviews(x_admin_key: str | None = Header(default=Non
         rows = db.execute("SELECT * FROM scheduled_interviews ORDER BY scheduled_at DESC").fetchall()
     return [{
         "id": row["id"], "candidate_name": row["candidate_name"], "candidate_email": row["candidate_email"], "scheduled_at": row["scheduled_at"], "status": row["status"], "session_id": row["session_id"],
-        "report": json.loads(row["report_json"]) if row["report_json"] else None, "setup": json.loads(row["setup_json"]),
+        "report": json.loads(row["report_json"]) if row["report_json"] else None, "report_share_token": row["report_share_token"], "setup": json.loads(row["setup_json"]),
     } for row in rows]
 
 
@@ -310,3 +320,35 @@ async def join_invitation(invite_token: str, request: InviteJoinRequest):
     with db_connection() as db:
         db.execute("UPDATE scheduled_interviews SET session_id = ?, status = 'in_progress', started_at = ? WHERE id = ?", (session["id"], iso(), row["id"]))
     return {"session_id": session["id"]}
+
+
+@app.post("/api/admin/interviews/{interview_id}/share")
+async def create_report_share_link(interview_id: str, x_admin_key: str | None = Header(default=None)):
+    """Create/retrieve a secret, read-only link for a completed assessment."""
+    require_admin(x_admin_key)
+    with db_connection() as db:
+        row = db.execute("SELECT report_json, report_share_token FROM scheduled_interviews WHERE id = ?", (interview_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Scheduled interview not found")
+        if not row["report_json"]:
+            raise HTTPException(status_code=409, detail="A share link is available after the interview report is complete")
+        token = row["report_share_token"] or secrets.token_urlsafe(24)
+        if not row["report_share_token"]:
+            db.execute("UPDATE scheduled_interviews SET report_share_token = ? WHERE id = ?", (token, interview_id))
+    return {"share_token": token}
+
+
+@app.get("/api/shared-reports/{share_token}")
+async def get_shared_report(share_token: str):
+    with db_connection() as db:
+        row = db.execute(
+            "SELECT candidate_name, candidate_email, scheduled_at, setup_json, report_json FROM scheduled_interviews WHERE report_share_token = ?",
+            (share_token,),
+        ).fetchone()
+    if not row or not row["report_json"]:
+        raise HTTPException(status_code=404, detail="Shared report not found")
+    return {
+        "candidate_name": row["candidate_name"], "candidate_email": row["candidate_email"],
+        "scheduled_at": row["scheduled_at"], "setup": json.loads(row["setup_json"]),
+        "report": json.loads(row["report_json"]),
+    }

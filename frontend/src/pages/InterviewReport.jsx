@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { useSearchParams, Link } from 'react-router-dom';
+import { useSearchParams } from 'react-router-dom';
 import { api } from '../api';
 
 function ScoreCard({ title, score }) {
@@ -108,9 +108,7 @@ export default function InterviewReport() {
             ? 'The report service did not return a report. Please return to the screening page and try again.'
             : 'The report is not available right now. Please try again in a moment.'}
         </p>
-        <Link to="/" className="inline-flex items-center justify-center rounded-xl bg-indigo-600 px-6 py-3 text-sm font-bold text-white hover:bg-indigo-700 transition-colors">
-          Return to screenings
-        </Link>
+        <p className="text-xs font-semibold text-indigo-600">Please contact your recruiter if you need assistance.</p>
       </div>
     </div>
   );
@@ -119,9 +117,7 @@ export default function InterviewReport() {
     <div className="app-shell report-shell min-h-screen bg-[#09090B] text-[#FAFAFA] font-sans selection:bg-[#6366F1] selection:text-white pb-20">
       <header className="w-full flex items-center justify-between px-6 py-4 border-b border-[#27272A] bg-[#09090B]/80 backdrop-blur-md sticky top-0 z-50">
         <div className="text-[13px] font-semibold tracking-[0.08em] uppercase text-[#FAFAFA]">INTERVIEWOS</div>
-        <Link to="/" className="text-[#A1A1AA] hover:text-[#FAFAFA] text-[12px] uppercase tracking-widest font-medium transition-colors">
-          CREATE NEW SCREENING →
-        </Link>
+        <div className="text-[#A1A1AA] text-[12px] uppercase tracking-widest font-medium">Private candidate report</div>
       </header>
 
       <main className="max-w-4xl mx-auto px-6 pt-12">
@@ -247,14 +243,6 @@ export default function InterviewReport() {
           </div>
         </div>
 
-        <div className="mt-16 text-center">
-          <Link
-            to="/"
-            className="inline-flex items-center px-8 py-4 bg-[#FAFAFA] text-[#09090B] font-bold text-sm rounded-full hover:bg-white hover:scale-105 transition-all shadow-[0_0_15px_rgba(250,250,250,0.1)]"
-          >
-            CREATE NEW SCREENING →
-          </Link>
-        </div>
       </main>
     </div>
   );
