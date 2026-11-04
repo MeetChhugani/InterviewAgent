@@ -218,6 +218,10 @@ For Railway, add a persistent Volume to the **API service** and set
 `DATABASE_PATH=/data/interviewos.db`. Without a volume, SQLite data is removed
 when Railway replaces the API container.
 
+Set `HR_LOGIN_EMAIL` and `HR_LOGIN_PASSWORD` on the API service as well. HR
+staff sign in at `/hr-login`; the dashboard issues a 12-hour server-side
+session and does not expose `ADMIN_ACCESS_KEY` to the browser.
+
 Run these before sharing changes:
 
 ```powershell

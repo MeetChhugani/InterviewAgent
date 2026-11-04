@@ -20,6 +20,8 @@ logging.basicConfig(level=logging.INFO)
 AGENT_NAME = os.getenv("LIVEKIT_AGENT_NAME", "interviewer").strip() or "interviewer"
 DATABASE_PATH = Path(os.getenv("DATABASE_PATH", "interviewos.db"))
 ADMIN_ACCESS_KEY = os.getenv("ADMIN_ACCESS_KEY", "").strip()
+HR_LOGIN_EMAIL = os.getenv("HR_LOGIN_EMAIL", "hr@interviewos.com").strip().lower()
+HR_LOGIN_PASSWORD = os.getenv("HR_LOGIN_PASSWORD", "").strip()
 
 app = FastAPI(title="Voice Interviewer API")
 
@@ -75,6 +77,11 @@ class InviteJoinRequest(BaseModel):
     password: str = Field(min_length=1, max_length=128)
 
 
+class AdminLoginRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=254)
+    password: str = Field(min_length=1, max_length=128)
+
+
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -125,6 +132,11 @@ def initialise_database():
                 completed_at TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_invite_token ON scheduled_interviews(invite_token);
+            CREATE TABLE IF NOT EXISTS admin_sessions (
+                token TEXT PRIMARY KEY,
+                expires_at TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
         """)
         # Existing installations already have the table. Add the lock column
         # once, without invalidating their old interview records.
@@ -142,9 +154,35 @@ def startup():
         logging.getLogger("api").warning("ADMIN_ACCESS_KEY is not configured. Admin API routes are disabled.")
 
 
-def require_admin(x_admin_key: str | None):
-    if not ADMIN_ACCESS_KEY or not x_admin_key or not secrets.compare_digest(x_admin_key, ADMIN_ACCESS_KEY):
-        raise HTTPException(status_code=401, detail="A valid admin access key is required")
+def require_admin(x_admin_key: str | None, x_admin_session: str | None):
+    # The server-only key remains available for emergency/API administration.
+    if ADMIN_ACCESS_KEY and x_admin_key and secrets.compare_digest(x_admin_key, ADMIN_ACCESS_KEY):
+        return
+    if x_admin_session:
+        with db_connection() as db:
+            row = db.execute("SELECT expires_at FROM admin_sessions WHERE token = ?", (x_admin_session,)).fetchone()
+            if row and datetime.fromisoformat(row["expires_at"]) > now_utc():
+                return
+            db.execute("DELETE FROM admin_sessions WHERE token = ?", (x_admin_session,))
+    if not ADMIN_ACCESS_KEY:
+        raise HTTPException(status_code=503, detail="Admin access is not configured")
+    raise HTTPException(status_code=401, detail="Please sign in as HR to continue")
+
+
+@app.post("/api/admin/login")
+async def admin_login(request: AdminLoginRequest):
+    if not HR_LOGIN_PASSWORD:
+        raise HTTPException(status_code=503, detail="HR login is not configured")
+    valid_email = secrets.compare_digest(request.email.strip().lower(), HR_LOGIN_EMAIL)
+    valid_password = secrets.compare_digest(request.password, HR_LOGIN_PASSWORD)
+    if not (valid_email and valid_password):
+        raise HTTPException(status_code=401, detail="Incorrect HR email or password")
+    token = secrets.token_urlsafe(32)
+    expires_at = now_utc() + timedelta(hours=12)
+    with db_connection() as db:
+        db.execute("DELETE FROM admin_sessions WHERE expires_at <= ?", (iso(),))
+        db.execute("INSERT INTO admin_sessions (token, expires_at, created_at) VALUES (?, ?, ?)", (token, iso(expires_at), iso()))
+    return {"session_token": token, "expires_at": iso(expires_at)}
 
 
 def password_digest(password: str, salt: str | None = None) -> str:
@@ -261,8 +299,8 @@ async def complete_session(session_id: str, report: dict):
 
 
 @app.post("/api/admin/interviews")
-async def schedule_interview(request: ScheduledInterviewRequest, x_admin_key: str | None = Header(default=None)):
-    require_admin(x_admin_key)
+async def schedule_interview(request: ScheduledInterviewRequest, x_admin_key: str | None = Header(default=None), x_admin_session: str | None = Header(default=None)):
+    require_admin(x_admin_key, x_admin_session)
     if request.scheduled_at.tzinfo is None:
         raise HTTPException(status_code=422, detail="scheduled_at must include a timezone")
     interview_id, token = str(uuid.uuid4()), secrets.token_urlsafe(24)
@@ -275,8 +313,8 @@ async def schedule_interview(request: ScheduledInterviewRequest, x_admin_key: st
 
 
 @app.get("/api/admin/interviews")
-async def list_scheduled_interviews(x_admin_key: str | None = Header(default=None)):
-    require_admin(x_admin_key)
+async def list_scheduled_interviews(x_admin_key: str | None = Header(default=None), x_admin_session: str | None = Header(default=None)):
+    require_admin(x_admin_key, x_admin_session)
     with db_connection() as db:
         rows = db.execute("SELECT * FROM scheduled_interviews ORDER BY scheduled_at DESC").fetchall()
     return [{
@@ -323,9 +361,9 @@ async def join_invitation(invite_token: str, request: InviteJoinRequest):
 
 
 @app.post("/api/admin/interviews/{interview_id}/share")
-async def create_report_share_link(interview_id: str, x_admin_key: str | None = Header(default=None)):
+async def create_report_share_link(interview_id: str, x_admin_key: str | None = Header(default=None), x_admin_session: str | None = Header(default=None)):
     """Create/retrieve a secret, read-only link for a completed assessment."""
-    require_admin(x_admin_key)
+    require_admin(x_admin_key, x_admin_session)
     with db_connection() as db:
         row = db.execute("SELECT report_json, report_share_token FROM scheduled_interviews WHERE id = ?", (interview_id,)).fetchone()
         if not row:
